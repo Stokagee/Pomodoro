@@ -1,0 +1,53 @@
+{
+  "test_mode": false,
+  "presets": {
+    "deep_work": {
+      "name": "Deep Work (IT Default)",
+      "work_minutes": 52,
+      "break_minutes": 17,
+      "icon": "brain",
+      "color": "#8b5cf6"
+    },
+    "learning": {
+      "name": "Learning Mode",
+      "work_minutes": 45,
+      "break_minutes": 15,
+      "icon": "book",
+      "color": "#3b82f6"
+    },
+    "quick_tasks": {
+      "name": "Quick Tasks",
+      "work_minutes": 25,
+      "break_minutes": 5,
+      "icon": "zap",
+      "color": "#f59e0b"
+    },
+    "flow_mode": {
+      "name": "Flow Mode",
+      "work_minutes": 90,
+      "break_minutes": 20,
+      "icon": "waves",
+      "color": "#06b6d4"
+    }
+  },
+  "default_preset": "deep_work",
+  "sessions_before_long_break": 4,
+  "long_break_minutes": 30,
+  "daily_goal_sessions": 10,
+  "sound_enabled": true,
+  "notification_enabled": true,
+  "auto_start_break": false,
+  "show_time_in_tab": false,
+  "categories": [
+    "SOAP",
+    "Robot Framework",
+    "REST API",
+    "Database",
+    "Frontend",
+    "LinkedIn",
+    "Job Hunting",
+    "Learning",
+    "YT",
+    "Other"
+  ]
+}

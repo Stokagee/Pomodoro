@@ -1,0 +1,69 @@
+services:
+  pomodoro-web:
+    build: ./web
+    container_name: pomodoro-web
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/pomodoro
+      - ML_SERVICE_URL=http://ml-service:5001
+      - FLASK_ENV=development
+    volumes:
+      - ./web:/app
+      - ./logs:/app/logs
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  ml-service:
+    build: ./ml-service
+    container_name: pomodoro-ml
+    ports:
+      - "5001:5001"
+    depends_on:
+      - mongodb
+    environment:
+      - MONGO_URI=mongodb://mongodb:27017/pomodoro
+      - FLASK_ENV=development
+    volumes:
+      - ./ml-service:/app
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  mongodb:
+    image: mongo:7
+    container_name: pomodoro-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./data/mongodb:/data/backup
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  mongo-express:
+    image: mongo-express
+    container_name: pomodoro-mongo-admin
+    ports:
+      - "8081:8081"
+    depends_on:
+      - mongodb
+    environment:
+      - ME_CONFIG_MONGODB_SERVER=mongodb
+      - ME_CONFIG_MONGODB_PORT=27017
+      - ME_CONFIG_BASICAUTH_USERNAME=${ME_CONFIG_BASICAUTH_USERNAME:-admin}
+      - ME_CONFIG_BASICAUTH_PASSWORD=${ME_CONFIG_BASICAUTH_PASSWORD}
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+networks:
+  pomodoro-network:
+    driver: bridge
+
+volumes:
+  mongodb_data:

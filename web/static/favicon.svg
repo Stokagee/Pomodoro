@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="tomatoGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#8b5cf6"/>
+      <stop offset="100%" style="stop-color:#6d28d9"/>
+    </linearGradient>
+  </defs>
+  <!-- Timer circle -->
+  <circle cx="50" cy="50" r="45" fill="url(#tomatoGrad)"/>
+  <!-- Inner circle -->
+  <circle cx="50" cy="50" r="38" fill="#1a1a1a"/>
+  <!-- Timer marks -->
+  <circle cx="50" cy="18" r="3" fill="#8b5cf6"/>
+  <circle cx="82" cy="50" r="3" fill="#8b5cf6"/>
+  <circle cx="50" cy="82" r="3" fill="#8b5cf6"/>
+  <circle cx="18" cy="50" r="3" fill="#8b5cf6"/>
+  <!-- Play symbol -->
+  <polygon points="42,35 42,65 68,50" fill="#8b5cf6"/>
+</svg>

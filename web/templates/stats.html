@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+
+{% block title %}Statistiky{% endblock %}
+
+{% block content %}
+<div class="stats-container">
+    <h1>Statistiky</h1>
+
+    <!-- Today's Overview -->
+    <section class="stats-section">
+        <h2>Dnes</h2>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-icon">&#128337;</span>
+                <span class="stat-value">{{ today_stats.sessions }}</span>
+                <span class="stat-label">Sessions</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#9201;</span>
+                <span class="stat-value">{{ today_stats.total_hours }}h</span>
+                <span class="stat-label">Celkem</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#127919;</span>
+                <span class="stat-value">{{ today_stats.sessions }}/{{ config.daily_goal_sessions }}</span>
+                <span class="stat-label">Cil</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#128200;</span>
+                <span class="stat-value">{{ ((today_stats.sessions / config.daily_goal_sessions) * 100)|int }}%</span>
+                <span class="stat-label">Splneno</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- Weekly Overview -->
+    <section class="stats-section">
+        <h2>Tento tyden</h2>
+        <div class="stats-grid">
+            <div class="stat-card large">
+                <span class="stat-icon">&#128197;</span>
+                <span class="stat-value">{{ weekly_stats.total_hours }}h</span>
+                <span class="stat-label">Celkem tento tyden</span>
+            </div>
+        </div>
+
+        <!-- Daily breakdown -->
+        <div class="chart-container">
+            <h3>Denní přehled</h3>
+            <div class="bar-chart">
+                {% for day in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'] %}
+                {% set day_data = weekly_stats.daily.get(day, {'minutes': 0}) %}
+                {% set minutes = day_data.minutes if day_data is mapping else day_data %}
+                <div class="bar-item">
+                    <div class="bar" style="height: {{ (minutes / 420 * 100)|int }}%">
+                        <span class="bar-value">{{ (minutes / 60)|round(1) }}h</span>
+                    </div>
+                    <span class="bar-label">{{ day[:3] }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+
+        <!-- Category breakdown -->
+        <div class="chart-container">
+            <h3>Podle kategorie</h3>
+            <div class="category-list">
+                {% for cat, cat_data in weekly_stats.categories.items() %}
+                {% set cat_minutes = cat_data.minutes if cat_data is mapping else cat_data %}
+                <div class="category-item">
+                    <span class="category-name">{{ cat }}</span>
+                    <div class="category-bar">
+                        <div class="category-fill" style="width: {{ (cat_minutes / weekly_stats.total_minutes * 100)|int if weekly_stats.total_minutes > 0 else 0 }}%"></div>
+                    </div>
+                    <span class="category-time">{{ (cat_minutes / 60)|round(1) }}h</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+    </section>
+
+    <!-- Today's Sessions -->
+    <section class="stats-section">
+        <h2>Dnesni sessions</h2>
+        <div class="sessions-list">
+            {% if today_stats.details %}
+                {% for session in today_stats.details %}
+                <div class="session-item accordion">
+                    <div class="session-header" onclick="toggleSession(this)">
+                        <span class="session-time">{{ session.time }}</span>
+                        <span class="session-category">{{ session.category }}</span>
+                        <span class="session-task">{{ session.task or '-' }}</span>
+                        <span class="session-duration">{{ session.duration_minutes }} min</span>
+                        <span class="session-rating-badge">
+                            {% if session.productivity_rating is not none %}
+                                {% set full_stars = (session.productivity_rating / 20)|int %}
+                                {% for i in range(full_stars) %}★{% endfor %}{% for i in range(5 - full_stars) %}☆{% endfor %}
+                                <span class="rating-percent">{{ session.productivity_rating|int }}%</span>
+                            {% else %}
+                                <span class="no-rating">–</span>
+                            {% endif %}
+                        </span>
+                        <span class="session-toggle">▼</span>
+                    </div>
+                    <div class="session-details">
+                        <div class="detail-grid">
+                            <div class="detail-item">
+                                <span class="detail-label">Preset</span>
+                                <span class="detail-value">{{ session.preset|default('deep_work')|replace('_', ' ')|title }}</span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Hodnocení</span>
+                                <span class="detail-value rating-stars">
+                                    {% if session.productivity_rating is not none %}
+                                        {% set full_stars = (session.productivity_rating / 20)|int %}
+                                        {% for i in range(full_stars) %}<span class="star filled">★</span>{% endfor %}{% for i in range(5 - full_stars) %}<span class="star">☆</span>{% endfor %}
+                                        <span class="rating-number">({{ session.productivity_rating|int }}%)</span>
+                                    {% else %}
+                                        <span class="no-rating-text">Nehodnoceno</span>
+                                    {% endif %}
+                                </span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Dokončeno</span>
+                                <span class="detail-value {% if session.completed %}completed{% else %}not-completed{% endif %}">
+                                    {{ '✓ Ano' if session.completed else '✗ Ne' }}
+                                </span>
+                            </div>
+                            <div class="detail-item">
+                                <span class="detail-label">Datum a čas</span>
+                                <span class="detail-value">{{ session.date }} {{ session.time }}</span>
+                            </div>
+                        </div>
+                        {% if session.notes %}
+                        <div class="detail-notes">
+                            <span class="detail-label">📝 Poznámky</span>
+                            <p class="notes-content">{{ session.notes }}</p>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <p class="no-data">Zadne sessions dnes. Zacni pracovat!</p>
+            {% endif %}
+        </div>
+    </section>
+</div>
+
+<script>
+function toggleSession(header) {
+    const item = header.parentElement;
+    item.classList.toggle('expanded');
+}
+</script>
+{% endblock %}

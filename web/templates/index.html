@@ -1,0 +1,215 @@
+{% extends "base.html" %}
+
+{% block title %}Timer{% endblock %}
+
+{% block content %}
+<div class="timer-container">
+    <!-- ML Recommendation Widget -->
+    {% if recommendation %}
+    <div class="ml-widget recommendation-widget">
+        <div class="widget-icon">&#129504;</div>
+        <div class="widget-content">
+            <span class="widget-label">Doporučený preset:</span>
+            <span class="widget-value">{{ recommendation.recommended_preset|title }}</span>
+            <span class="widget-reason">{{ recommendation.reason }}</span>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if prediction %}
+    <div class="ml-widget prediction-widget">
+        <div class="widget-icon">&#128200;</div>
+        <div class="widget-content">
+            <span class="widget-label">Predikce na dnes:</span>
+            <span class="widget-value">{{ prediction.predicted_sessions }} sessions</span>
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Preset Selection -->
+    <div class="preset-selector">
+        {% for key, preset in config.presets.items() %}
+        <button class="preset-btn {% if key == config.default_preset %}active{% endif %}"
+                data-preset="{{ key }}"
+                data-work="{{ preset.work_minutes }}"
+                data-break="{{ preset.break_minutes }}"
+                style="--preset-color: {{ preset.color }}">
+            <span class="preset-icon">
+                {% if preset.icon == 'brain' %}&#129504;{% endif %}
+                {% if preset.icon == 'book' %}&#128218;{% endif %}
+                {% if preset.icon == 'zap' %}&#9889;{% endif %}
+                {% if preset.icon == 'waves' %}&#127754;{% endif %}
+            </span>
+            <span class="preset-name">{{ preset.name }}</span>
+            <span class="preset-time">{{ preset.work_minutes }}/{{ preset.break_minutes }}</span>
+        </button>
+        {% endfor %}
+    </div>
+
+    <!-- Timer Display -->
+    <div class="timer-display">
+        <div class="timer-ring">
+            <svg viewBox="0 0 200 200">
+                <circle class="timer-ring-bg" cx="100" cy="100" r="90"/>
+                <circle class="timer-ring-progress" cx="100" cy="100" r="90" id="progress-ring"/>
+            </svg>
+            <div class="timer-content">
+                <div class="timer-phase" id="timer-phase">WORK</div>
+                <div class="timer-time" id="timer-time">52:00</div>
+                <div class="timer-session" id="timer-session">Session 1/4</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls -->
+    <div class="timer-controls">
+        <button class="control-btn" id="btn-start">
+            <span class="btn-icon">&#9654;</span>
+            Start
+        </button>
+        <button class="control-btn" id="btn-pause" style="display: none;">
+            <span class="btn-icon">&#10074;&#10074;</span>
+            Pause
+        </button>
+        <button class="control-btn secondary" id="btn-reset">
+            <span class="btn-icon">&#8635;</span>
+            Reset
+        </button>
+        <button class="control-btn secondary" id="btn-skip">
+            <span class="btn-icon">&#9193;</span>
+            Skip
+        </button>
+    </div>
+
+    <!-- Task Input -->
+    <div class="task-input-container">
+        <select id="category-select" class="task-select">
+            {% for cat in config.categories %}
+            <option value="{{ cat }}">{{ cat }}</option>
+            {% endfor %}
+        </select>
+        <input type="text" id="task-input" class="task-input" placeholder="Na čem pracuješ? (volitelné)">
+    </div>
+
+    <!-- Keyboard Shortcuts -->
+    <div class="shortcuts-hint">
+        <span class="shortcut-item"><kbd>Space</kbd> Start/Pause</span>
+        <span class="shortcut-item"><kbd>R</kbd> Reset</span>
+    </div>
+
+    <!-- Today's Progress -->
+    <div class="progress-container">
+        <h3>Dnešní pokrok</h3>
+        <div class="progress-stats">
+            <div class="stat-item">
+                <span class="stat-value" id="stat-sessions">{{ today_stats.sessions }}</span>
+                <span class="stat-label">sessions</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="stat-hours">{{ today_stats.total_hours }}</span>
+                <span class="stat-label">hodin</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="stat-rating">{{ today_stats.avg_rating|default(0, true) }}</span>
+                <span class="stat-label">avg rating</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-value" id="stat-goal">{{ config.daily_goal_sessions }}</span>
+                <span class="stat-label">cíl</span>
+            </div>
+        </div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="progress-fill"
+                 style="width: {{ (today_stats.sessions / config.daily_goal_sessions * 100)|int }}%"></div>
+        </div>
+    </div>
+</div>
+
+<!-- Rating Modal -->
+<div class="modal-overlay" id="rating-modal" style="display: none;">
+    <div class="modal">
+        <div class="modal-header">
+            <h2>Session dokončena!</h2>
+            <p>Jak produktivní jsi se cítil?</p>
+        </div>
+        <div class="modal-body">
+            <!-- Procentuální zobrazení -->
+            <div class="rating-percentage" id="rating-percentage">0%</div>
+
+            <!-- SVG hvězdy s gradient fill -->
+            <div class="rating-stars-svg" id="rating-stars">
+                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                    <defs>
+                        <!-- Gradient pro každou hvězdu -->
+                        <linearGradient id="star-gradient-0" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop class="fill-stop" offset="0%" stop-color="var(--accent-orange, #f59e0b)"/>
+                            <stop class="empty-stop" offset="0%" stop-color="var(--text-muted, #666)"/>
+                        </linearGradient>
+                        <linearGradient id="star-gradient-1" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop class="fill-stop" offset="0%" stop-color="var(--accent-orange, #f59e0b)"/>
+                            <stop class="empty-stop" offset="0%" stop-color="var(--text-muted, #666)"/>
+                        </linearGradient>
+                        <linearGradient id="star-gradient-2" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop class="fill-stop" offset="0%" stop-color="var(--accent-orange, #f59e0b)"/>
+                            <stop class="empty-stop" offset="0%" stop-color="var(--text-muted, #666)"/>
+                        </linearGradient>
+                        <linearGradient id="star-gradient-3" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop class="fill-stop" offset="0%" stop-color="var(--accent-orange, #f59e0b)"/>
+                            <stop class="empty-stop" offset="0%" stop-color="var(--text-muted, #666)"/>
+                        </linearGradient>
+                        <linearGradient id="star-gradient-4" x1="0%" y1="0%" x2="100%" y2="0%">
+                            <stop class="fill-stop" offset="0%" stop-color="var(--accent-orange, #f59e0b)"/>
+                            <stop class="empty-stop" offset="0%" stop-color="var(--text-muted, #666)"/>
+                        </linearGradient>
+                    </defs>
+                    <!-- 5 hvězd - Star path (d = hvězda) -->
+                    <path class="star-path" data-star="0" fill="url(#star-gradient-0)"
+                          d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z"
+                          transform="translate(0, 0)"/>
+                    <path class="star-path" data-star="1" fill="url(#star-gradient-1)"
+                          d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z"
+                          transform="translate(52, 0)"/>
+                    <path class="star-path" data-star="2" fill="url(#star-gradient-2)"
+                          d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z"
+                          transform="translate(104, 0)"/>
+                    <path class="star-path" data-star="3" fill="url(#star-gradient-3)"
+                          d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z"
+                          transform="translate(156, 0)"/>
+                    <path class="star-path" data-star="4" fill="url(#star-gradient-4)"
+                          d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z"
+                          transform="translate(208, 0)"/>
+                </svg>
+            </div>
+
+            <div class="rating-labels">
+                <span>0%</span>
+                <span>50%</span>
+                <span>100%</span>
+            </div>
+            <textarea id="session-notes" class="session-notes" placeholder="Poznámky k session (volitelné)..." rows="2"></textarea>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn secondary" id="rating-skip">Přeskočit</button>
+            <button class="modal-btn primary" id="rating-save" disabled>Uložit</button>
+        </div>
+    </div>
+</div>
+
+<!-- Audio for notifications -->
+<audio id="audio-work-end" preload="auto">
+    <source src="{{ url_for('static', filename='sounds/work_end.wav') }}" type="audio/wav">
+    <source src="{{ url_for('static', filename='sounds/work_end.mp3') }}" type="audio/mpeg">
+</audio>
+<audio id="audio-break-end" preload="auto">
+    <source src="{{ url_for('static', filename='sounds/break_end.wav') }}" type="audio/wav">
+    <source src="{{ url_for('static', filename='sounds/break_end.mp3') }}" type="audio/mpeg">
+</audio>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Pass config to JavaScript
+    const CONFIG = {{ config | tojson | safe }};
+    const TODAY_STATS = {{ today_stats | tojson | safe }};
+</script>
+{% endblock %}

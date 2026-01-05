@@ -1,0 +1,176 @@
+{% extends "base.html" %}
+
+{% block title %}ML Insights{% endblock %}
+
+{% block content %}
+<div class="insights-container">
+    <h1>ML Insights</h1>
+
+    {% if analysis %}
+    <!-- Main Insights Grid -->
+    <div class="insights-grid">
+        <!-- Best Hours Card -->
+        <div class="insight-card">
+            <h3><span class="icon">&#9200;</span> Nejproduktivnejsi hodiny</h3>
+            <div class="best-hours">
+                {% if analysis.analysis.best_hours %}
+                    {% for hour in analysis.analysis.best_hours %}
+                    <span class="hour-badge best">{{ hour }}:00</span>
+                    {% endfor %}
+                {% else %}
+                    <span class="no-data">Zatim nedostatek dat</span>
+                {% endif %}
+            </div>
+            {% if analysis.analysis.worst_hours %}
+            <h4 style="margin-top: 1rem; font-size: 0.875rem; color: var(--text-muted);">Nejmene produktivni:</h4>
+            <div class="best-hours">
+                {% for hour in analysis.analysis.worst_hours %}
+                <span class="hour-badge worst">{{ hour }}:00</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+
+        <!-- Best Day Card -->
+        <div class="insight-card">
+            <h3><span class="icon">&#128197;</span> Nejlepsi den</h3>
+            {% if analysis.analysis.best_day %}
+            <div style="font-size: 2rem; color: var(--accent-green); margin-bottom: 0.5rem;">
+                {{ analysis.analysis.best_day }}
+            </div>
+            <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                Tve nejproduktivnejsi den v tydnu
+            </p>
+            {% else %}
+            <span class="no-data">Zatim nedostatek dat</span>
+            {% endif %}
+        </div>
+
+        <!-- Trend Card -->
+        <div class="insight-card">
+            <h3><span class="icon">&#128200;</span> Trend produktivity</h3>
+            <div class="trend-indicator {{ analysis.analysis.trend }}">
+                {% if analysis.analysis.trend == 'up' %}
+                <span style="font-size: 2rem;">&#8593;</span>
+                <span>Zlepsuje se!</span>
+                {% elif analysis.analysis.trend == 'down' %}
+                <span style="font-size: 2rem;">&#8595;</span>
+                <span>Klesajici</span>
+                {% else %}
+                <span style="font-size: 2rem;">&#8596;</span>
+                <span>Stabilni</span>
+                {% endif %}
+            </div>
+            <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">
+                Na zaklade poslednich 7 dni
+            </p>
+        </div>
+
+        <!-- Sessions Analyzed -->
+        <div class="insight-card">
+            <h3><span class="icon">&#128202;</span> Analyzovano</h3>
+            <div style="font-size: 2rem; color: var(--accent-purple); margin-bottom: 0.5rem;">
+                {{ analysis.analysis.total_sessions_analyzed }}
+            </div>
+            <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                sessions s ratingem
+            </p>
+        </div>
+    </div>
+
+    <!-- Category Performance -->
+    {% if analysis.analysis.productivity_by_category %}
+    <div class="insight-card" style="margin-bottom: 1.5rem;">
+        <h3><span class="icon">&#128193;</span> Produktivita podle kategorie</h3>
+        <div class="category-list" style="margin-top: 1rem;">
+            {% for cat, data in analysis.analysis.productivity_by_category.items() %}
+            <div class="category-item">
+                <span class="category-name">{{ cat }}</span>
+                <div class="category-bar">
+                    <div class="category-fill" style="width: {{ (data.avg_rating / 5 * 100)|int }}%"></div>
+                </div>
+                <span class="category-time">{{ data.avg_rating }}/5 ({{ data.session_count }}x)</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Preset Performance -->
+    {% if analysis.analysis.productivity_by_preset %}
+    <div class="insight-card" style="margin-bottom: 1.5rem;">
+        <h3><span class="icon">&#128344;</span> Produktivita podle presetu</h3>
+        <div class="category-list" style="margin-top: 1rem;">
+            {% for preset, data in analysis.analysis.productivity_by_preset.items() %}
+            <div class="category-item">
+                <span class="category-name">{{ preset|replace('_', ' ')|title }}</span>
+                <div class="category-bar">
+                    <div class="category-fill" style="width: {{ (data.avg_rating / 5 * 100)|int }}%"></div>
+                </div>
+                <span class="category-time">{{ data.avg_rating }}/5 ({{ data.session_count }}x)</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Hourly Productivity -->
+    {% if analysis.analysis.productivity_by_hour %}
+    <div class="chart-container">
+        <h3>Produktivita behem dne</h3>
+        <div class="bar-chart">
+            {% for hour in range(6, 20) %}
+            {% set rating = analysis.analysis.productivity_by_hour.get(hour, 0) %}
+            <div class="bar-item">
+                <div class="bar" style="height: {{ (rating / 5 * 150)|int }}px;">
+                    {% if rating > 0 %}
+                    <span class="bar-value">{{ rating }}</span>
+                    {% endif %}
+                </div>
+                <span class="bar-label">{{ hour }}h</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <!-- No ML Data Available -->
+    <div class="insight-card" style="text-align: center; padding: 3rem;">
+        <div style="font-size: 4rem; margin-bottom: 1rem;">&#129504;</div>
+        <h2>ML Service neni k dispozici</h2>
+        <p style="color: var(--text-secondary); margin-top: 1rem;">
+            Zkontroluj, ze ML service bezi na portu 5001.<br>
+            Spust <code>docker-compose up</code> pro spusteni vsech sluzeb.
+        </p>
+    </div>
+    {% endif %}
+
+    <!-- Weekly Stats Summary -->
+    <div class="stats-section" style="margin-top: 2rem;">
+        <h2>Tydenni prehled</h2>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-icon">&#128197;</span>
+                <span class="stat-value">{{ weekly_stats.total_sessions }}</span>
+                <span class="stat-label">sessions tento tyden</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#9201;</span>
+                <span class="stat-value">{{ weekly_stats.total_hours }}</span>
+                <span class="stat-label">hodin celkem</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#128200;</span>
+                <span class="stat-value">{{ today_stats.sessions }}</span>
+                <span class="stat-label">sessions dnes</span>
+            </div>
+            <div class="stat-card">
+                <span class="stat-icon">&#11088;</span>
+                <span class="stat-value">{{ today_stats.avg_rating|default(0, true) }}</span>
+                <span class="stat-label">avg rating dnes</span>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
