@@ -20,14 +20,19 @@ class PomodoroTimer {
         this.selectedRating = null;
         this.lastWorkMinutes = 0;  // Track actual worked minutes for proportional break
         this.todayFocus = null;  // Today's focus theme
+        this.burnoutRisk = typeof BURNOUT_RISK !== 'undefined' ? BURNOUT_RISK : null;
+        this.burnoutCheckedToday = false;  // Track if we showed warning today
 
         this.initializeSocket();
         this.initializeElements();
         this.bindEvents();
         this.initializeRatingModal();
+        this.initializeBurnoutModal();  // Initialize burnout warning modal
+        this.initializeQualityPrediction();  // Initialize quality prediction widget
         this.setPreset(this.currentPreset);
         this.loadTodayFocus();  // Load daily focus
         this.loadTimerState();  // Restore timer state from localStorage
+        this.checkBurnoutOnLoad();  // Check if we need to warn on page load
     }
 
     // === Timer State Persistence (localStorage) ===
@@ -164,6 +169,10 @@ class PomodoroTimer {
             this.socket.on('session_logged', (data) => {
                 console.log('Session logged:', data);
                 this.updateStats();
+            });
+            this.socket.on('achievement_unlocked', (achievement) => {
+                console.log('Achievement unlocked:', achievement);
+                this.showAchievementToast(achievement);
             });
         } catch (e) {
             console.log('Socket.IO not available, running in standalone mode');
@@ -486,8 +495,16 @@ class PomodoroTimer {
         this.updateDisplay();
     }
 
-    start() {
+    async start() {
         if (this.isRunning) return;
+
+        // Check burnout risk before starting (only for work sessions)
+        if (!this.isBreak) {
+            const canStart = await this.checkBurnoutBeforeStart();
+            if (!canStart) {
+                return; // Burnout warning modal is shown, wait for user decision
+            }
+        }
 
         this.isRunning = true;
         this.btnStart.style.display = 'none';
@@ -736,6 +753,67 @@ class PomodoroTimer {
         this.loadTodayFocus();
     }
 
+    // === Achievement Toast ===
+
+    showAchievementToast(achievement) {
+        // Try to use the global function from achievements.js if available
+        if (typeof window.showAchievementUnlockToast === 'function') {
+            window.showAchievementUnlockToast(achievement);
+            return;
+        }
+
+        // Fallback: Create toast container if it doesn't exist
+        let container = document.getElementById('achievement-toast-container');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'achievement-toast-container';
+            container.style.cssText = 'position:fixed;top:80px;right:20px;z-index:1000;display:flex;flex-direction:column;gap:0.75rem;';
+            document.body.appendChild(container);
+        }
+
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            display:flex;align-items:center;gap:1rem;padding:1rem 1.5rem;
+            background:#1a1a1a;border:2px solid #22c55e;border-radius:12px;
+            box-shadow:0 4px 20px rgba(0,0,0,0.5);min-width:300px;
+            animation:toast-slide-in 0.5s ease;
+        `;
+
+        // Add legendary glow for legendary achievements
+        if (achievement.rarity === 'legendary') {
+            toast.style.borderColor = '#f59e0b';
+            toast.style.boxShadow = '0 0 30px rgba(245, 158, 11, 0.5)';
+        }
+
+        toast.innerHTML = `
+            <span style="font-size:2rem;">${achievement.icon || '🏆'}</span>
+            <div style="flex:1;">
+                <div style="font-weight:600;font-size:0.875rem;">Achievement odemcen!</div>
+                <div style="font-size:0.75rem;color:#a0a0a0;">${achievement.name || 'Achievement'}</div>
+            </div>
+            <span style="font-family:'JetBrains Mono',monospace;color:#f59e0b;font-size:0.875rem;">+${achievement.points || 0} pts</span>
+        `;
+
+        container.appendChild(toast);
+
+        // Play notification sound
+        try {
+            const audio = new Audio('/static/sounds/notification.mp3');
+            audio.volume = 0.3;
+            audio.play().catch(() => {});
+        } catch (e) {}
+
+        // Remove toast after 5 seconds
+        setTimeout(() => {
+            toast.style.animation = 'toast-fade-out 0.5s ease forwards';
+            setTimeout(() => {
+                if (toast.parentNode) {
+                    toast.parentNode.removeChild(toast);
+                }
+            }, 500);
+        }, 4500);
+    }
+
     // === Daily Focus Integration ===
 
     async loadTodayFocus() {
@@ -798,7 +876,15 @@ class PomodoroTimer {
         if (!this.config.sound_enabled) return;
 
         try {
-            const audio = type === 'work' ? this.audioWorkEnd : this.audioBreakEnd;
+            let audio;
+            if (type === 'work') {
+                audio = this.audioWorkEnd;
+            } else if (type === 'break') {
+                audio = this.audioBreakEnd;
+            } else if (type === 'burnout') {
+                audio = this.audioBurnoutWarning;
+            }
+
             if (audio) {
                 audio.currentTime = 0;
                 audio.play().catch(() => {});
@@ -806,6 +892,193 @@ class PomodoroTimer {
         } catch (e) {
             // Audio not available
         }
+    }
+
+    // === Burnout Risk Warning System ===
+
+    initializeBurnoutModal() {
+        // Burnout modal elements
+        this.burnoutModal = document.getElementById('burnout-warning-modal');
+        this.burnoutIgnoreBtn = document.getElementById('burnout-ignore');
+        this.burnoutTakeBreakBtn = document.getElementById('burnout-take-break');
+        this.audioBurnoutWarning = document.getElementById('audio-burnout-warning');
+
+        if (this.burnoutIgnoreBtn) {
+            this.burnoutIgnoreBtn.addEventListener('click', () => {
+                this.hideBurnoutModal();
+                this.burnoutCheckedToday = true;
+                this.saveBurnoutCheckState();
+                // Continue with starting the timer
+                this.startTimerAfterBurnoutCheck();
+            });
+        }
+
+        if (this.burnoutTakeBreakBtn) {
+            this.burnoutTakeBreakBtn.addEventListener('click', () => {
+                this.hideBurnoutModal();
+                this.burnoutCheckedToday = true;
+                this.saveBurnoutCheckState();
+                // Don't start timer, user chose to take a break
+            });
+        }
+
+        // Load burnout check state from localStorage
+        this.loadBurnoutCheckState();
+    }
+
+    saveBurnoutCheckState() {
+        const today = new Date().toDateString();
+        localStorage.setItem('burnoutCheckedDate', today);
+    }
+
+    loadBurnoutCheckState() {
+        const savedDate = localStorage.getItem('burnoutCheckedDate');
+        const today = new Date().toDateString();
+        this.burnoutCheckedToday = (savedDate === today);
+    }
+
+    checkBurnoutOnLoad() {
+        // If burnout risk is high/critical, show browser notification on page load
+        if (this.burnoutRisk &&
+            ['high', 'critical'].includes(this.burnoutRisk.risk_level) &&
+            !this.burnoutCheckedToday) {
+            this.showBurnoutBrowserNotification();
+        }
+    }
+
+    async checkBurnoutBeforeStart() {
+        // Skip if already checked today or during break
+        if (this.burnoutCheckedToday || this.isBreak) {
+            return true; // OK to proceed
+        }
+
+        // Use preloaded data or fetch fresh
+        let risk = this.burnoutRisk;
+        if (!risk) {
+            risk = await this.fetchBurnoutRisk();
+            this.burnoutRisk = risk;
+        }
+
+        if (risk && ['high', 'critical'].includes(risk.risk_level)) {
+            this.showBurnoutWarningModal(risk);
+            return false; // Don't start yet
+        }
+
+        return true; // OK to proceed
+    }
+
+    async fetchBurnoutRisk() {
+        try {
+            const response = await fetch('/api/burnout-risk');
+            if (response.ok) {
+                return await response.json();
+            }
+        } catch (e) {
+            console.log('Could not fetch burnout risk:', e);
+        }
+        return null;
+    }
+
+    showBurnoutWarningModal(risk) {
+        if (!this.burnoutModal) return;
+
+        // Play warning sound
+        this.playSound('burnout');
+
+        // Populate modal with risk data
+        const scoreEl = document.getElementById('modal-risk-score');
+        const badgeEl = document.getElementById('modal-risk-badge');
+        const gaugeEl = document.getElementById('modal-risk-gauge');
+        const factorsEl = document.getElementById('modal-burnout-factors');
+        const recsEl = document.getElementById('modal-recommendations');
+
+        if (scoreEl) {
+            scoreEl.textContent = risk.risk_score;
+        }
+
+        if (badgeEl) {
+            badgeEl.textContent = risk.risk_level.toUpperCase();
+            badgeEl.className = `risk-badge risk-badge-${risk.risk_level}`;
+        }
+
+        if (gaugeEl) {
+            gaugeEl.style.setProperty('--risk-percent', risk.risk_score);
+        }
+
+        // Populate risk factors
+        if (factorsEl && risk.risk_factors) {
+            factorsEl.innerHTML = '<h4>Hlavni faktory:</h4>';
+            const topFactors = risk.risk_factors.slice(0, 3);
+            topFactors.forEach(factor => {
+                const item = document.createElement('div');
+                item.className = 'burnout-factor-item';
+                item.innerHTML = `
+                    <span class="factor-severity-dot ${factor.severity}"></span>
+                    <span>${factor.message}</span>
+                `;
+                factorsEl.appendChild(item);
+            });
+        }
+
+        // Populate recommendations
+        if (recsEl && risk.recommendations) {
+            recsEl.innerHTML = '<h4>Doporuceni:</h4><ul>';
+            const topRecs = risk.recommendations.slice(0, 2);
+            topRecs.forEach(rec => {
+                recsEl.innerHTML += `<li>${rec}</li>`;
+            });
+            recsEl.innerHTML += '</ul>';
+        }
+
+        // Show modal
+        this.burnoutModal.style.display = 'flex';
+    }
+
+    hideBurnoutModal() {
+        if (this.burnoutModal) {
+            this.burnoutModal.style.display = 'none';
+        }
+    }
+
+    showBurnoutBrowserNotification() {
+        if (!('Notification' in window) || Notification.permission !== 'granted') {
+            return;
+        }
+
+        const risk = this.burnoutRisk;
+        if (!risk) return;
+
+        const topFactor = risk.risk_factors && risk.risk_factors[0]
+            ? risk.risk_factors[0].message
+            : 'Doporucujeme odpocinek';
+
+        const notification = new Notification('Pomodoro - Riziko vyhoreni', {
+            body: `Risk: ${risk.risk_level.toUpperCase()} (${risk.risk_score}/100)\n${topFactor}`,
+            icon: '/static/images/icon.png',
+            tag: 'burnout-warning',
+            requireInteraction: true
+        });
+
+        notification.onclick = () => {
+            window.focus();
+            window.location.href = '/insights#burnout';
+        };
+    }
+
+    startTimerAfterBurnoutCheck() {
+        // Actually start the timer (bypassing burnout check)
+        this.isRunning = true;
+        this.btnStart.style.display = 'none';
+        this.btnPause.style.display = 'flex';
+
+        this.targetEndTime = Date.now() + (this.remainingSeconds * 1000);
+
+        this.interval = setInterval(() => {
+            this.tick();
+        }, 1000);
+
+        this.updateTitle();
+        this.saveTimerState();
     }
 
     showNotification(title, body) {
@@ -823,6 +1096,133 @@ class PomodoroTimer {
                     new Notification(title, { body: body, tag: 'pomodoro' });
                 }
             });
+        }
+    }
+
+    // === Session Quality Prediction ===
+
+    initializeQualityPrediction() {
+        this.qualityWidget = document.getElementById('quality-prediction-widget');
+        this.qualityScore = document.getElementById('prediction-score');
+        this.qualityRingProgress = document.getElementById('prediction-ring-progress');
+        this.qualityFactors = document.getElementById('prediction-factors');
+        this.qualityRecommendation = document.getElementById('prediction-recommendation');
+
+        if (!this.qualityWidget) return;
+
+        // Initial fetch
+        this.fetchQualityPrediction();
+
+        // Live update on preset change
+        this.presetBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                // Small delay to let preset change complete
+                setTimeout(() => this.fetchQualityPrediction(), 100);
+            });
+        });
+
+        // Live update on category change
+        if (this.categorySelect) {
+            this.categorySelect.addEventListener('change', () => {
+                this.fetchQualityPrediction();
+            });
+        }
+    }
+
+    async fetchQualityPrediction() {
+        if (!this.qualityWidget) return;
+
+        const preset = this.currentPreset;
+        const category = this.categorySelect ? this.categorySelect.value : null;
+
+        try {
+            const params = new URLSearchParams({ preset });
+            if (category) params.append('category', category);
+
+            const response = await fetch(`/api/quality-prediction?${params}`);
+            const data = await response.json();
+
+            if (!data.error) {
+                this.updateQualityWidget(data);
+            } else {
+                this.showQualityError();
+            }
+        } catch (e) {
+            console.log('Could not fetch quality prediction:', e);
+            this.showQualityError();
+        }
+    }
+
+    updateQualityWidget(data) {
+        if (!this.qualityWidget) return;
+
+        const score = Math.round(data.predicted_productivity || 70);
+
+        // Update score display
+        if (this.qualityScore) {
+            this.qualityScore.textContent = `${score}%`;
+        }
+
+        // Update ring progress (circumference = 2 * PI * 35 = 219.91)
+        if (this.qualityRingProgress) {
+            const circumference = 219.91;
+            const offset = circumference * (1 - score / 100);
+            this.qualityRingProgress.style.strokeDashoffset = offset;
+
+            // Color based on score
+            let color = '#22c55e'; // green
+            if (score < 60) {
+                color = '#ef4444'; // red
+            } else if (score < 75) {
+                color = '#f59e0b'; // orange
+            }
+            this.qualityRingProgress.style.stroke = color;
+        }
+
+        // Update factors
+        if (this.qualityFactors && data.factors) {
+            const topFactors = data.factors.slice(0, 2);
+            if (topFactors.length > 0) {
+                this.qualityFactors.innerHTML = topFactors.map(f => `
+                    <span class="factor-tag factor-${f.type}">
+                        ${f.type === 'positive' ? '✓' : '✗'} ${f.name}
+                    </span>
+                `).join('');
+            } else {
+                this.qualityFactors.innerHTML = '';
+            }
+        }
+
+        // Update recommendation
+        if (this.qualityRecommendation && data.recommendation) {
+            const rec = data.recommendation;
+            this.qualityRecommendation.innerHTML = `
+                <span class="rec-icon">${rec.icon || '💡'}</span>
+                <span class="rec-text">${rec.message}</span>
+            `;
+            this.qualityRecommendation.className = `prediction-recommendation rec-${rec.type}`;
+        }
+
+        // Update widget class based on score
+        this.qualityWidget.classList.remove('score-high', 'score-medium', 'score-low');
+        if (score >= 75) {
+            this.qualityWidget.classList.add('score-high');
+        } else if (score >= 60) {
+            this.qualityWidget.classList.add('score-medium');
+        } else {
+            this.qualityWidget.classList.add('score-low');
+        }
+    }
+
+    showQualityError() {
+        if (this.qualityScore) {
+            this.qualityScore.textContent = '--';
+        }
+        if (this.qualityRecommendation) {
+            this.qualityRecommendation.innerHTML = `
+                <span class="rec-icon">⚠️</span>
+                <span class="rec-text">ML sluzba nedostupna</span>
+            `;
         }
     }
 }

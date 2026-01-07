@@ -146,6 +146,319 @@
     </div>
     {% endif %}
 
+    <!-- Focus Optimizer Section -->
+    <section id="focus-optimizer" class="focus-optimizer-section" style="margin-top: 2rem;">
+        <h2><span class="icon">&#128337;</span> Focus Optimizer</h2>
+
+        {% if optimal_schedule %}
+        <div class="focus-optimizer-content">
+            <!-- Peak & Avoid Hours Row -->
+            <div class="insights-grid" style="margin-bottom: 1.5rem;">
+                <!-- Peak Hours Card -->
+                <div class="insight-card peak-hours-card">
+                    <h3><span class="icon" style="color: var(--accent-green);">&#9650;</span> Peak Hours</h3>
+                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem;">Tve nejlepsi hodiny pro praci</p>
+                    <div class="best-hours">
+                        {% for hour in optimal_schedule.peak_hours[:5] %}
+                        <span class="hour-badge best" title="{{ hour.preset_name }} - {{ hour.expected_productivity|round|int }}%">
+                            {{ hour.time }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% if optimal_schedule.peak_hours[0] %}
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.75rem;">
+                        Doporuceny preset: <strong>{{ optimal_schedule.peak_hours[0].preset_name }}</strong>
+                    </p>
+                    {% endif %}
+                </div>
+
+                <!-- Avoid Hours Card -->
+                <div class="insight-card avoid-hours-card">
+                    <h3><span class="icon" style="color: var(--accent-red);">&#9660;</span> Vyhni se</h3>
+                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-bottom: 0.5rem;">Hodiny s nizsi produktivitou</p>
+                    <div class="best-hours">
+                        {% for hour in optimal_schedule.avoid_hours[:5] %}
+                        <span class="hour-badge worst" title="{{ hour.reason }}">
+                            {{ hour.time }}
+                        </span>
+                        {% endfor %}
+                    </div>
+                    {% if optimal_schedule.avoid_hours[0] %}
+                    <p style="color: var(--text-secondary); font-size: 0.8rem; margin-top: 0.75rem;">
+                        {{ optimal_schedule.avoid_hours[0].reason }}
+                    </p>
+                    {% endif %}
+                </div>
+
+                <!-- Summary Card -->
+                <div class="insight-card">
+                    <h3><span class="icon">&#128338;</span> Dnesni doporuceni</h3>
+                    <div style="font-size: 1.5rem; color: var(--accent-green); margin-bottom: 0.5rem;">
+                        {{ optimal_schedule.summary.best_time_range }}
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                        Idealni cas pro {{ optimal_schedule.summary.recommended_sessions }} sessions
+                    </p>
+                    <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.5rem;">
+                        Ocekavana produktivita: {{ optimal_schedule.summary.expected_avg_productivity|round|int }}%
+                    </p>
+                </div>
+
+                <!-- Confidence Card -->
+                <div class="insight-card">
+                    <h3><span class="icon">&#128202;</span> Spolehlivost</h3>
+                    <div style="font-size: 2rem; color: var(--accent-purple); margin-bottom: 0.5rem;">
+                        {{ (optimal_schedule.confidence * 100)|int }}%
+                    </div>
+                    <p style="color: var(--text-secondary); font-size: 0.875rem;">
+                        {{ optimal_schedule.total_sessions_analyzed }} analyzovanych sessions
+                    </p>
+                </div>
+            </div>
+
+            <!-- Optimal Schedule Table -->
+            <div class="insight-card" style="margin-bottom: 1.5rem;">
+                <h3><span class="icon">&#128467;</span> Optimalni rozvrh na dnes ({{ optimal_schedule.day_of_week }})</h3>
+                <div class="optimal-schedule-table" style="margin-top: 1rem;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid var(--border-color);">
+                                <th style="text-align: left; padding: 0.5rem; color: var(--text-muted);">Cas</th>
+                                <th style="text-align: left; padding: 0.5rem; color: var(--text-muted);">Preset</th>
+                                <th style="text-align: center; padding: 0.5rem; color: var(--text-muted);">Delka</th>
+                                <th style="text-align: right; padding: 0.5rem; color: var(--text-muted);">Produktivita</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for session in optimal_schedule.optimal_schedule.sessions %}
+                            <tr style="border-bottom: 1px solid var(--border-color);">
+                                <td style="padding: 0.5rem; font-weight: 600;">{{ session.time }}</td>
+                                <td style="padding: 0.5rem;">
+                                    <span class="preset-badge" style="background: var(--bg-tertiary); padding: 0.25rem 0.5rem; border-radius: 4px;">
+                                        {{ session.preset_name }}
+                                    </span>
+                                </td>
+                                <td style="text-align: center; padding: 0.5rem; color: var(--text-secondary);">
+                                    {{ session.work_minutes }} min
+                                </td>
+                                <td style="text-align: right; padding: 0.5rem;">
+                                    <span style="color: var(--accent-green);">{{ session.expected_productivity|round|int }}%</span>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                        <tfoot>
+                            <tr style="font-weight: 600;">
+                                <td style="padding: 0.75rem 0.5rem;">Celkem</td>
+                                <td></td>
+                                <td style="text-align: center; padding: 0.75rem 0.5rem; color: var(--accent-cyan);">
+                                    {{ optimal_schedule.optimal_schedule.total_work_minutes }} min prace
+                                </td>
+                                <td style="text-align: right; padding: 0.75rem 0.5rem; color: var(--accent-green);">
+                                    {{ optimal_schedule.optimal_schedule.avg_expected_productivity|round|int }}% prumer
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+                <p style="color: var(--text-muted); font-size: 0.75rem; margin-top: 0.75rem;">
+                    {{ optimal_schedule.recommendation_basis }}
+                </p>
+            </div>
+
+            <!-- Hourly Breakdown Chart -->
+            <div class="chart-container">
+                <h3>Produktivita behem dne ({{ optimal_schedule.day_of_week }})</h3>
+                <div class="bar-chart focus-optimizer-chart">
+                    {% for hour in range(6, 22) %}
+                    {% set hour_data = optimal_schedule.hourly_breakdown.get(hour|string, {}) %}
+                    {% set productivity = hour_data.get('productivity') or hour_data.get('score', 50) %}
+                    <div class="bar-item">
+                        <div class="bar {% if hour_data.get('data_source') == 'default' %}bar-default{% endif %}"
+                             style="height: {{ (productivity / 100 * 120)|int }}px; background: {% if productivity >= 75 %}var(--accent-green){% elif productivity >= 55 %}var(--accent-yellow){% else %}var(--accent-red){% endif %};"
+                             title="{{ hour_data.get('recommended_preset', 'deep_work') }}">
+                            {% if productivity > 0 %}
+                            <span class="bar-value">{{ productivity|round|int }}</span>
+                            {% endif %}
+                        </div>
+                        <span class="bar-label">{{ hour }}h</span>
+                    </div>
+                    {% endfor %}
+                </div>
+                <div style="display: flex; gap: 1rem; justify-content: center; margin-top: 0.5rem; font-size: 0.75rem; color: var(--text-muted);">
+                    <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--accent-green); border-radius: 2px;"></span> 75%+</span>
+                    <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--accent-yellow); border-radius: 2px;"></span> 55-74%</span>
+                    <span><span style="display: inline-block; width: 12px; height: 12px; background: var(--accent-red); border-radius: 2px;"></span> &lt;55%</span>
+                </div>
+            </div>
+        </div>
+
+        {% else %}
+        <div class="insight-card" style="text-align: center; padding: 2rem;">
+            <div style="font-size: 3rem; margin-bottom: 1rem;">&#128337;</div>
+            <h3>Focus Optimizer neni k dispozici</h3>
+            <p style="color: var(--text-secondary); margin-top: 0.5rem;">
+                Zkontroluj, ze ML service bezi na portu 5001.
+            </p>
+        </div>
+        {% endif %}
+    </section>
+
+    <!-- Pattern Anomaly Detection -->
+    <section id="anomaly-detector" class="anomaly-detector-section" style="margin-top: 2rem;">
+        <h2><span class="icon">&#128269;</span> Detekce vzorcu</h2>
+
+        <div class="anomaly-widget" id="anomaly-widget">
+            <div class="anomaly-header">
+                <div class="anomaly-status-container">
+                    <span class="anomaly-status-icon" id="anomaly-status-icon">&#128260;</span>
+                    <span class="anomaly-status" id="anomaly-status">Nacitam...</span>
+                </div>
+                <span class="anomaly-confidence" id="anomaly-confidence"></span>
+            </div>
+
+            <div class="anomaly-content" id="anomaly-content">
+                <!-- Loading state -->
+                <div class="anomaly-loading" id="anomaly-loading">
+                    <div class="loading-spinner"></div>
+                    <p>Analyzuji vzorce chovani...</p>
+                </div>
+
+                <!-- Anomalies list - populated by JS -->
+                <div class="anomaly-list" id="anomaly-list" style="display: none;"></div>
+
+                <!-- No anomalies message -->
+                <div class="no-anomalies" id="no-anomalies" style="display: none;">
+                    <span class="icon" style="font-size: 2rem;">&#10004;</span>
+                    <p>Zadne neobvykle vzorce detekovany</p>
+                    <span class="sub-text">Vse vypada skvele!</span>
+                </div>
+
+                <!-- Insufficient data message -->
+                <div class="insufficient-data" id="insufficient-data" style="display: none;">
+                    <span class="icon" style="font-size: 2rem;">&#128202;</span>
+                    <p id="insufficient-message">Potrebuji vice dat</p>
+                </div>
+
+                <!-- Error message -->
+                <div class="anomaly-error" id="anomaly-error" style="display: none;">
+                    <span class="icon" style="font-size: 2rem;">&#9888;</span>
+                    <p>Sluzba neni dostupna</p>
+                </div>
+            </div>
+
+            <!-- Proactive Tips Section -->
+            <div class="proactive-tips" id="proactive-tips" style="display: none;">
+                <h4><span class="icon">&#128161;</span> Tipy</h4>
+                <div class="tips-list" id="tips-list"></div>
+            </div>
+
+            <!-- Baseline Summary -->
+            <div class="baseline-summary" id="baseline-summary" style="display: none;">
+                <h4><span class="icon">&#128200;</span> Tvuj zaklad (14 dni)</h4>
+                <div class="baseline-stats" id="baseline-stats"></div>
+            </div>
+
+            <!-- Patterns Summary -->
+            <div class="patterns-summary" id="patterns-summary" style="display: none;">
+                <div class="pattern-item" id="pattern-productivity">
+                    <span class="pattern-label">Produktivita:</span>
+                    <span class="pattern-value" id="pattern-productivity-value">-</span>
+                </div>
+                <div class="pattern-item" id="pattern-intensity">
+                    <span class="pattern-label">Intenzita:</span>
+                    <span class="pattern-value" id="pattern-intensity-value">-</span>
+                </div>
+                <div class="pattern-item" id="pattern-regularity">
+                    <span class="pattern-label">Pravidelnost:</span>
+                    <span class="pattern-value" id="pattern-regularity-value">-</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Burnout Risk Analysis -->
+    <section id="burnout" class="burnout-analysis" style="margin-top: 2rem;">
+        <h2><span class="icon">&#128293;</span> Riziko vyhoreni</h2>
+
+        {% if burnout_risk and burnout_risk.risk_level != 'unknown' %}
+        <div class="burnout-overview">
+            <div class="burnout-score-card">
+                <div class="risk-score-circle risk-{{ burnout_risk.risk_level }}">
+                    <svg viewBox="0 0 100 100">
+                        <circle class="risk-circle-bg" cx="50" cy="50" r="45"/>
+                        <circle class="risk-circle-fill" cx="50" cy="50" r="45"
+                                style="stroke-dasharray: {{ (burnout_risk.risk_score / 100 * 283)|int }}, 283;"/>
+                    </svg>
+                    <div class="risk-score-value">
+                        <span class="score">{{ burnout_risk.risk_score }}</span>
+                        <span class="score-max">/100</span>
+                    </div>
+                </div>
+                <div class="risk-level-badge risk-badge-{{ burnout_risk.risk_level }}">
+                    {{ burnout_risk.risk_level|upper }}
+                </div>
+                <p class="risk-confidence">
+                    Spolehlivost: {{ (burnout_risk.confidence * 100)|int }}%
+                    ({{ burnout_risk.total_sessions_analyzed }} sessions)
+                </p>
+            </div>
+
+            <div class="burnout-details">
+                <!-- Risk Factors -->
+                <div class="burnout-factors-section">
+                    <h3>Identifikovane faktory</h3>
+                    {% if burnout_risk.risk_factors %}
+                    <div class="factors-list">
+                        {% for factor in burnout_risk.risk_factors %}
+                        <div class="factor-item factor-{{ factor.severity }}">
+                            <div class="factor-header">
+                                <span class="factor-name">{{ factor.message }}</span>
+                                <span class="factor-score">+{{ factor.score }} bodu</span>
+                            </div>
+                            <div class="factor-bar-container">
+                                <div class="factor-bar factor-bar-{{ factor.severity }}"
+                                     style="width: {{ (factor.score / 25 * 100)|int }}%"></div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% else %}
+                    <p class="no-factors">Zadne rizikove faktory nebyly identifikovany. Skvela prace!</p>
+                    {% endif %}
+                </div>
+
+                <!-- Recommendations -->
+                <div class="burnout-recommendations-section">
+                    <h3>Doporuceni</h3>
+                    {% if burnout_risk.recommendations %}
+                    <ul class="recommendations-list">
+                        {% for rec in burnout_risk.recommendations %}
+                        <li>{{ rec }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% else %}
+                    <p class="no-recommendations">Zadna specificka doporuceni - pokracuj jako dosud!</p>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+
+        <p class="analysis-period">
+            Analyzovane obdobi: {{ burnout_risk.analyzed_period }}
+        </p>
+
+        {% else %}
+        <div class="insight-card" style="text-align: center; padding: 2rem;">
+            <div style="font-size: 3rem; margin-bottom: 1rem;">&#128293;</div>
+            <h3>Nedostatek dat pro analyzu</h3>
+            <p style="color: var(--text-secondary); margin-top: 0.5rem;">
+                Potrebujeme alespon 5 sessions za poslednich 14 dni pro vypocet rizika vyhoreni.
+            </p>
+        </div>
+        {% endif %}
+    </section>
+
     <!-- Weekly Stats Summary -->
     <div class="stats-section" style="margin-top: 2rem;">
         <h2>Tydenni prehled</h2>
@@ -173,4 +486,284 @@
         </div>
     </div>
 </div>
+
+<!-- Toast Container for Anomaly Notifications -->
+<div class="toast-container" id="toast-container"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+// =====================================================================
+// Pattern Anomaly Detector - Widget and Toast Notifications
+// =====================================================================
+
+const AnomalyDetector = {
+    // Status icons
+    statusIcons: {
+        healthy: '&#10004;',
+        info: '&#128161;',
+        warning: '&#9888;',
+        alert: '&#128680;',
+        critical: '&#128165;',
+        insufficient_data: '&#128202;',
+        error: '&#9888;'
+    },
+
+    // Severity colors
+    severityColors: {
+        low: 'var(--accent-blue)',
+        medium: 'var(--accent-orange)',
+        high: 'var(--accent-red)',
+        critical: '#7f1d1d'
+    },
+
+    // Pattern translations
+    patternTranslations: {
+        productivity_trend: {
+            improving: 'Zlepsuje se',
+            stable: 'Stabilni',
+            declining: 'Klesajici',
+            unknown: 'Neznamy'
+        },
+        work_intensity: {
+            high: 'Vysoka',
+            normal: 'Normalni',
+            low: 'Nizka',
+            unknown: 'Neznamy'
+        },
+        schedule_regularity: {
+            regular: 'Pravidelny',
+            moderate: 'Stredni',
+            irregular: 'Nepravidelny',
+            unknown: 'Neznamy'
+        }
+    },
+
+    // Initialize the widget
+    init: function() {
+        this.fetchAnomalies();
+    },
+
+    // Fetch anomalies from API
+    fetchAnomalies: async function() {
+        try {
+            const response = await fetch('/api/anomalies');
+            const data = await response.json();
+
+            if (response.ok) {
+                this.updateWidget(data);
+                this.showNewAnomalyToasts(data.anomalies);
+            } else {
+                this.showError();
+            }
+        } catch (error) {
+            console.error('Anomaly fetch error:', error);
+            this.showError();
+        }
+    },
+
+    // Update the widget with data
+    updateWidget: function(data) {
+        // Hide loading
+        document.getElementById('anomaly-loading').style.display = 'none';
+
+        // Update status
+        const statusIcon = document.getElementById('anomaly-status-icon');
+        const statusText = document.getElementById('anomaly-status');
+        const confidence = document.getElementById('anomaly-confidence');
+
+        statusIcon.innerHTML = this.statusIcons[data.overall_status] || this.statusIcons.info;
+        statusText.textContent = this.getStatusText(data.overall_status, data.anomalies_detected);
+        statusText.className = 'anomaly-status status-' + data.overall_status;
+
+        if (data.confidence > 0) {
+            confidence.textContent = Math.round(data.confidence * 100) + '% spolehlivost';
+            confidence.style.display = 'inline';
+        }
+
+        // Handle different states
+        if (data.overall_status === 'insufficient_data') {
+            document.getElementById('insufficient-data').style.display = 'flex';
+            document.getElementById('insufficient-message').textContent = data.message || 'Potrebuji vice dat';
+            return;
+        }
+
+        if (data.overall_status === 'error') {
+            this.showError();
+            return;
+        }
+
+        // Show anomalies or healthy message
+        if (data.anomalies_detected > 0) {
+            this.renderAnomalies(data.anomalies);
+            document.getElementById('anomaly-list').style.display = 'block';
+        } else {
+            document.getElementById('no-anomalies').style.display = 'flex';
+        }
+
+        // Show proactive tips
+        if (data.proactive_tips && data.proactive_tips.length > 0) {
+            this.renderTips(data.proactive_tips);
+            document.getElementById('proactive-tips').style.display = 'block';
+        }
+
+        // Show baseline summary
+        if (data.baseline_summary) {
+            this.renderBaselineSummary(data.baseline_summary);
+            document.getElementById('baseline-summary').style.display = 'block';
+        }
+
+        // Show patterns
+        if (data.patterns) {
+            this.renderPatterns(data.patterns);
+            document.getElementById('patterns-summary').style.display = 'flex';
+        }
+    },
+
+    // Get status text
+    getStatusText: function(status, count) {
+        const texts = {
+            healthy: 'Vse v poradku',
+            info: count + ' mala anomalie',
+            warning: count + ' varovani',
+            alert: count + ' dulezitych upozorneni',
+            critical: count + ' kritickych problemu',
+            insufficient_data: 'Nedostatek dat',
+            error: 'Chyba sluzby'
+        };
+        return texts[status] || 'Neznamy stav';
+    },
+
+    // Render anomalies list
+    renderAnomalies: function(anomalies) {
+        const container = document.getElementById('anomaly-list');
+        container.innerHTML = '';
+
+        anomalies.forEach(anomaly => {
+            const item = document.createElement('div');
+            item.className = 'anomaly-item severity-' + anomaly.severity;
+            item.innerHTML = `
+                <div class="anomaly-item-header">
+                    <span class="anomaly-icon">${anomaly.icon}</span>
+                    <span class="anomaly-name">${anomaly.name}</span>
+                    <span class="anomaly-severity severity-badge-${anomaly.severity}">${anomaly.severity}</span>
+                </div>
+                <p class="anomaly-description">${anomaly.description}</p>
+                <p class="anomaly-recommendation">
+                    <span class="icon">&#128161;</span> ${anomaly.recommendation}
+                </p>
+            `;
+            container.appendChild(item);
+        });
+    },
+
+    // Render proactive tips
+    renderTips: function(tips) {
+        const container = document.getElementById('tips-list');
+        container.innerHTML = '';
+
+        tips.forEach(tip => {
+            const item = document.createElement('div');
+            item.className = 'tip-item tip-' + tip.type;
+            item.innerHTML = `<span class="tip-icon">${tip.icon}</span> ${tip.message}`;
+            container.appendChild(item);
+        });
+    },
+
+    // Render baseline summary
+    renderBaselineSummary: function(baseline) {
+        const container = document.getElementById('baseline-stats');
+        container.innerHTML = `
+            <div class="baseline-stat">
+                <span class="stat-label">Prumerna produktivita:</span>
+                <span class="stat-value">${baseline.avg_productivity}%</span>
+            </div>
+            <div class="baseline-stat">
+                <span class="stat-label">Typicke hodiny:</span>
+                <span class="stat-value">${baseline.typical_hours.start}:00 - ${baseline.typical_hours.end}:00</span>
+            </div>
+            <div class="baseline-stat">
+                <span class="stat-label">Sessions/den:</span>
+                <span class="stat-value">${baseline.avg_sessions_per_day}</span>
+            </div>
+            ${baseline.top_category ? `
+            <div class="baseline-stat">
+                <span class="stat-label">Top kategorie:</span>
+                <span class="stat-value">${baseline.top_category}</span>
+            </div>
+            ` : ''}
+            ${baseline.current_streak > 0 ? `
+            <div class="baseline-stat">
+                <span class="stat-label">Aktualni streak:</span>
+                <span class="stat-value">${baseline.current_streak} dni</span>
+            </div>
+            ` : ''}
+        `;
+    },
+
+    // Render patterns
+    renderPatterns: function(patterns) {
+        document.getElementById('pattern-productivity-value').textContent =
+            this.patternTranslations.productivity_trend[patterns.productivity_trend] || patterns.productivity_trend;
+
+        document.getElementById('pattern-intensity-value').textContent =
+            this.patternTranslations.work_intensity[patterns.work_intensity] || patterns.work_intensity;
+
+        document.getElementById('pattern-regularity-value').textContent =
+            this.patternTranslations.schedule_regularity[patterns.schedule_regularity] || patterns.schedule_regularity;
+    },
+
+    // Show error state
+    showError: function() {
+        document.getElementById('anomaly-loading').style.display = 'none';
+        document.getElementById('anomaly-error').style.display = 'flex';
+        document.getElementById('anomaly-status').textContent = 'Sluzba nedostupna';
+        document.getElementById('anomaly-status').className = 'anomaly-status status-error';
+    },
+
+    // Show toast notifications for new anomalies
+    showNewAnomalyToasts: function(anomalies) {
+        // Only show toasts for medium+ severity
+        const significantAnomalies = anomalies.filter(a =>
+            ['medium', 'high', 'critical'].includes(a.severity)
+        );
+
+        // Show max 3 toasts
+        significantAnomalies.slice(0, 3).forEach((anomaly, index) => {
+            setTimeout(() => {
+                this.showToast(anomaly);
+            }, index * 500);
+        });
+    },
+
+    // Show a single toast notification
+    showToast: function(anomaly) {
+        const container = document.getElementById('toast-container');
+
+        const toast = document.createElement('div');
+        toast.className = 'toast-notification severity-' + anomaly.severity;
+        toast.innerHTML = `
+            <span class="toast-icon">${anomaly.icon}</span>
+            <div class="toast-content">
+                <span class="toast-title">${anomaly.name}</span>
+                <span class="toast-desc">${anomaly.description}</span>
+            </div>
+            <button class="toast-close" onclick="this.parentElement.remove()">&times;</button>
+        `;
+
+        container.appendChild(toast);
+
+        // Auto-remove after 5 seconds
+        setTimeout(() => {
+            toast.classList.add('toast-fadeout');
+            setTimeout(() => toast.remove(), 300);
+        }, 5000);
+    }
+};
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+    AnomalyDetector.init();
+});
+</script>
 {% endblock %}

@@ -9,7 +9,8 @@ from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
 
-from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor
+from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor, BurnoutPredictor, FocusOptimizer, SessionQualityPredictor, PatternAnomalyDetector
+from models.ai_challenge_generator import AIChallengeGenerator
 
 # Load environment variables
 load_dotenv()
@@ -21,6 +22,9 @@ CORS(app)
 MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/pomodoro')
 client = None
 db = None
+
+# AI Challenge Generator (singleton)
+ai_generator = AIChallengeGenerator()
 
 
 def init_db():
@@ -59,7 +63,7 @@ def health():
     return jsonify({
         'status': 'healthy',
         'service': 'pomodoro-ml',
-        'mongodb': 'connected' if db else 'disconnected'
+        'mongodb': 'connected' if db is not None else 'disconnected'
     })
 
 
@@ -168,6 +172,179 @@ def preset_stats():
     return jsonify(stats)
 
 
+@app.route('/api/burnout-risk')
+def burnout_risk():
+    """
+    Get burnout risk assessment
+
+    Returns:
+        dict: Risk score, level, factors, and recommendations
+    """
+    sessions = get_sessions()
+    predictor = BurnoutPredictor(sessions)
+    result = predictor.predict_burnout()
+    return jsonify(result)
+
+
+@app.route('/api/optimal-schedule')
+def optimal_schedule():
+    """
+    Focus Optimizer - Generate optimal work schedule
+
+    Query params:
+        sessions: Number of sessions to schedule (1-12, default: 6)
+        day: Day of week or 'today' (default: 'today')
+             Options: today, monday, tuesday, wednesday, thursday, friday, saturday, sunday
+                      or Czech: pondeli, utery, streda, ctvrtek, patek, sobota, nedele
+
+    Returns:
+        dict: Optimal schedule with peak hours, avoid hours, and recommendations
+    """
+    from datetime import datetime
+
+    # Parse parameters
+    num_sessions = request.args.get('sessions', 6, type=int)
+    day_param = request.args.get('day', 'today').lower()
+
+    # Validate sessions (1-12 reasonable range)
+    num_sessions = max(1, min(12, num_sessions))
+
+    # Parse day parameter
+    day_map = {
+        'monday': 0, 'pondeli': 0, 'pondělí': 0,
+        'tuesday': 1, 'utery': 1, 'úterý': 1,
+        'wednesday': 2, 'streda': 2, 'středa': 2,
+        'thursday': 3, 'ctvrtek': 3, 'čtvrtek': 3,
+        'friday': 4, 'patek': 4, 'pátek': 4,
+        'saturday': 5, 'sobota': 5,
+        'sunday': 6, 'nedele': 6, 'neděle': 6,
+        'today': datetime.now().weekday()
+    }
+
+    target_day = day_map.get(day_param, datetime.now().weekday())
+
+    try:
+        # Get sessions and create optimizer
+        sessions = get_sessions()
+        optimizer = FocusOptimizer(sessions)
+        result = optimizer.analyze(day=target_day, num_sessions=num_sessions)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in optimal-schedule: {e}")
+        return jsonify({
+            'error': str(e),
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'peak_hours': [],
+            'avoid_hours': [],
+            'optimal_schedule': {'sessions': []},
+            'confidence': 0
+        }), 500
+
+
+@app.route('/api/predict-quality', methods=['POST', 'GET'])
+def predict_quality():
+    """
+    Session Quality Predictor - Predict expected productivity BEFORE session starts
+
+    Query params (GET) or JSON body (POST):
+        hour: Current hour (0-23, default: current)
+        day: Day of week (0=Mon to 6=Sun, default: today)
+        preset: Preset name (default: 'deep_work')
+        category: Category name (optional)
+        sessions_today: Number of completed sessions today (default: 0)
+        minutes_since_last: Minutes since last session ended (optional)
+
+    Returns:
+        dict: Prediction with factors, confidence, and recommendation
+    """
+    from datetime import datetime
+
+    # Get parameters from either JSON body or query params
+    if request.method == 'POST' and request.is_json:
+        data = request.get_json()
+    else:
+        data = {}
+
+    # Parse parameters with defaults
+    now = datetime.now()
+    hour = data.get('hour') or request.args.get('hour', type=int)
+    if hour is None:
+        hour = now.hour
+
+    day = data.get('day') or request.args.get('day', type=int)
+    if day is None:
+        day = now.weekday()
+
+    preset = data.get('preset') or request.args.get('preset', 'deep_work')
+    category = data.get('category') or request.args.get('category')
+    sessions_today = data.get('sessions_today') or request.args.get('sessions_today', 0, type=int)
+    minutes_since_last = data.get('minutes_since_last') or request.args.get('minutes_since_last', type=int)
+
+    try:
+        sessions = get_sessions()
+        predictor = SessionQualityPredictor(sessions)
+        result = predictor.predict(
+            hour=hour,
+            day=day,
+            preset=preset,
+            category=category,
+            sessions_today=sessions_today,
+            minutes_since_last=minutes_since_last
+        )
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in predict-quality: {e}")
+        return jsonify({
+            'error': str(e),
+            'predicted_productivity': 70.0,
+            'confidence': 0,
+            'factors': [],
+            'recommendation': {
+                'type': 'info',
+                'message': 'Nelze načíst predikci',
+                'action': 'Zkuste to znovu',
+                'icon': '⚠️'
+            }
+        }), 500
+
+
+@app.route('/api/detect-anomalies', methods=['GET'])
+def detect_anomalies():
+    """
+    Pattern Anomaly Detector - Detect unusual patterns in user behavior
+
+    Detects 6 anomaly types:
+    - productivity_drop: Sudden decline in productivity
+    - unusual_hours: Working outside normal schedule
+    - category_shift: Change in preferred categories
+    - streak_break: Missing days after long streak
+    - overwork_spike: Sudden increase in work intensity
+    - quality_decline: Drop in session ratings
+
+    Returns:
+        dict: Detected anomalies with severity, recommendations, and proactive tips
+    """
+    try:
+        sessions = get_sessions()
+        detector = PatternAnomalyDetector(sessions)
+        result = detector.detect_all()
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in detect-anomalies: {e}")
+        return jsonify({
+            'error': str(e),
+            'anomalies_detected': 0,
+            'overall_status': 'error',
+            'anomalies': [],
+            'proactive_tips': [],
+            'confidence': 0.0,
+            'metadata': {
+                'model_version': '1.0',
+                'error_message': str(e)
+            }
+        }), 500
+
+
 @app.route('/api/train', methods=['POST'])
 def train():
     """
@@ -212,11 +389,13 @@ def insights_summary():
     analyzer = ProductivityAnalyzer(sessions)
     recommender = PresetRecommender(sessions)
     predictor = SessionPredictor(sessions)
+    burnout_predictor = BurnoutPredictor(sessions)
 
     analysis = analyzer.analyze()
     recommendation = recommender.recommend()
     prediction = predictor.predict_today()
     trends = predictor.get_trends()
+    burnout = burnout_predictor.predict_burnout()
 
     return jsonify({
         'analysis': {
@@ -234,7 +413,12 @@ def insights_summary():
             'productivity': prediction['predicted_productivity'],
             'remaining': prediction['remaining_sessions']
         },
-        'trends': trends
+        'trends': trends,
+        'burnout': {
+            'risk_score': burnout['risk_score'],
+            'risk_level': burnout['risk_level'],
+            'top_factor': burnout['risk_factors'][0] if burnout['risk_factors'] else None
+        }
     })
 
 
@@ -472,6 +656,120 @@ def theme_recommendation(date):
     })
 
 
+# === AI Challenge Generation Endpoints ===
+
+@app.route('/api/ai/health')
+def ai_health():
+    """
+    Check AI (Ollama) service health
+
+    Returns:
+        dict: Status of Ollama connection and model availability
+    """
+    return jsonify(ai_generator.health_check())
+
+
+@app.route('/api/ai/daily-challenge')
+def ai_daily_challenge():
+    """
+    Get AI-generated daily challenge
+
+    Query params:
+        level: User level (default: 1)
+        avg_sessions: Average daily sessions (default: 3)
+        top_category: User's top category (default: Coding)
+        streak: Current streak days (default: 0)
+
+    Returns:
+        dict: Daily challenge with title, description, target, xp_reward
+    """
+    user_context = {
+        'level': request.args.get('level', 1, type=int),
+        'avg_sessions': request.args.get('avg_sessions', 3, type=float),
+        'top_category': request.args.get('top_category', 'Coding'),
+        'streak': request.args.get('streak', 0, type=int),
+        'weak_areas': request.args.get('weak_areas', 'zadna data')
+    }
+
+    challenge = ai_generator.generate_daily_challenge(user_context)
+    return jsonify(challenge)
+
+
+@app.route('/api/ai/weekly-quest')
+def ai_weekly_quest():
+    """
+    Get AI-generated weekly quests
+
+    Query params:
+        level: User level (default: 1)
+        xp: User total XP (default: 0)
+        weekly_avg: Average weekly sessions (default: 15)
+
+    Returns:
+        list: Array of weekly quests
+    """
+    user_profile = {
+        'level': request.args.get('level', 1, type=int),
+        'xp': request.args.get('xp', 0, type=int),
+        'weekly_avg': request.args.get('weekly_avg', 15, type=float),
+        'best_categories': request.args.getlist('best_categories') or ['Coding']
+    }
+
+    quests = ai_generator.generate_weekly_quests(user_profile)
+    return jsonify(quests)
+
+
+@app.route('/api/ai/motivation')
+def ai_motivation():
+    """
+    Get AI-generated motivation message
+
+    Query params:
+        sessions_today: Today's completed sessions (default: 0)
+        streak: Current streak days (default: 0)
+        mood: Current mood (default: neutralni)
+
+    Returns:
+        dict: Motivation message
+    """
+    context = {
+        'sessions_today': request.args.get('sessions_today', 0, type=int),
+        'streak': request.args.get('streak', 0, type=int),
+        'mood': request.args.get('mood', 'neutralni')
+    }
+
+    message = ai_generator.generate_motivation_message(context)
+    return jsonify({'message': message})
+
+
+@app.route('/api/ai/achievement-focus')
+def ai_achievement_focus():
+    """
+    Get AI suggestion for which achievement to focus on
+
+    This endpoint requires achievements data to be passed as JSON body
+    or fetched from the database.
+
+    Returns:
+        dict: Suggested achievement with reason
+    """
+    # Try to get achievements from database
+    if db is not None:
+        try:
+            achievements = list(db.achievements.find())
+            for a in achievements:
+                a['_id'] = str(a['_id'])
+                a['id'] = a.get('achievement_id', str(a['_id']))
+        except Exception as e:
+            print(f"Error fetching achievements: {e}")
+            achievements = []
+    else:
+        achievements = []
+
+    suggestion = ai_generator.suggest_achievement_focus(achievements)
+    return jsonify(suggestion)
+
+
 if __name__ == '__main__':
     print("\n" + "=" * 50)
     print("  POMODORO ML SERVICE")
@@ -484,13 +782,23 @@ if __name__ == '__main__':
 
     print(f"\n  API available at: http://localhost:5001/api")
     print("\n  Endpoints:")
-    print("    GET  /api/health         - Health check")
-    print("    GET  /api/analysis       - Full productivity analysis")
-    print("    GET  /api/recommendation - Get preset recommendation")
+    print("    GET  /api/health           - Health check")
+    print("    GET  /api/analysis         - Full productivity analysis")
+    print("    GET  /api/recommendation   - Get preset recommendation")
     print("    GET  /api/prediction/today - Today's prediction")
     print("    GET  /api/prediction/week  - Weekly forecast")
-    print("    GET  /api/trends         - Recent trends")
-    print("    POST /api/train          - Retrain models")
+    print("    GET  /api/trends           - Recent trends")
+    print("    GET  /api/burnout-risk     - Burnout risk assessment")
+    print("    GET  /api/optimal-schedule - Focus Optimizer schedule")
+    print("    GET  /api/predict-quality  - Session Quality Predictor")
+    print("    GET  /api/detect-anomalies - Pattern Anomaly Detector")
+    print("    POST /api/train            - Retrain models")
+    print("\n  AI Endpoints (Ollama):")
+    print("    GET  /api/ai/health           - AI service health")
+    print("    GET  /api/ai/daily-challenge  - AI daily challenge")
+    print("    GET  /api/ai/weekly-quest     - AI weekly quests")
+    print("    GET  /api/ai/motivation       - AI motivation message")
+    print("    GET  /api/ai/achievement-focus - Achievement suggestion")
     print("\n" + "=" * 50 + "\n")
 
     app.run(host='0.0.0.0', port=5001, debug=True)

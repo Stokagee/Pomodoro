@@ -1,0 +1,270 @@
+{% extends "base.html" %}
+
+{% block title %}Achievements{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/achievements.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="achievements-container">
+    <h1>Achievements</h1>
+
+    <!-- XP/Level Progress Section -->
+    <section class="level-progress-section">
+        <div class="level-card">
+            <div class="level-avatar">
+                <span class="level-number">{{ user_profile.level|default(1, true) }}</span>
+            </div>
+            <div class="level-details">
+                <h2 class="level-title">{{ user_profile.title|default('Zacatecnik', true) }}</h2>
+                <div class="xp-progress">
+                    <div class="xp-bar-large">
+                        <div class="xp-fill-large" style="width: {{ ((user_profile.xp|default(0, true) - user_profile.current_level_xp|default(0, true)) / max(1, user_profile.next_level_xp|default(100, true) - user_profile.current_level_xp|default(0, true)) * 100)|int }}%"></div>
+                    </div>
+                    <span class="xp-numbers">{{ user_profile.xp|default(0, true) }} / {{ user_profile.next_level_xp|default(100, true) }} XP</span>
+                </div>
+                <p class="level-next">{{ user_profile.xp_to_next_level|default(100, true) }} XP do dalsího levelu</p>
+            </div>
+            <div class="level-stats">
+                <div class="level-stat-item">
+                    <span class="level-stat-value">{{ user_profile.total_xp_earned|default(0, true) }}</span>
+                    <span class="level-stat-label">Celkem XP</span>
+                </div>
+                <div class="level-stat-item">
+                    <span class="level-stat-value">{{ user_profile.streak_freezes_available|default(0, true) }}</span>
+                    <span class="level-stat-label">Freeze tokeny</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Daily Challenge & Weekly Quests -->
+    <section class="challenges-section">
+        <div class="challenges-grid">
+            <!-- Daily Challenge -->
+            {% if daily_challenge %}
+            <div class="challenge-card daily">
+                <div class="challenge-card-header">
+                    <span class="challenge-card-icon">⚔️</span>
+                    <h3>Denní výzva</h3>
+                    {% if daily_challenge.ai_generated %}
+                    <span class="ai-badge">AI</span>
+                    {% endif %}
+                    {% if daily_challenge.completed %}
+                    <span class="completed-check">✓</span>
+                    {% endif %}
+                </div>
+                <div class="challenge-card-body">
+                    <h4>{{ daily_challenge.title|default('Dokoncit 4 sessions', true) }}</h4>
+                    <p>{{ daily_challenge.description|default('Splň dnešní cíl', true) }}</p>
+                </div>
+                <div class="challenge-card-progress">
+                    <div class="challenge-progress-bar">
+                        <div class="challenge-progress-fill {% if daily_challenge.completed %}completed{% endif %}"
+                             style="width: {{ min((daily_challenge.progress|default(0, true)) / max(1, daily_challenge.target|default(4, true)) * 100, 100)|int }}%"></div>
+                    </div>
+                    <span class="progress-numbers">{{ daily_challenge.progress|default(0, true) }}/{{ daily_challenge.target|default(4, true) }}</span>
+                </div>
+                <div class="challenge-card-footer">
+                    <span class="xp-reward">+{{ daily_challenge.xp_reward|default(50, true) }} XP</span>
+                    <span class="difficulty {{ daily_challenge.difficulty|default('medium', true) }}">{{ daily_challenge.difficulty|default('Medium', true)|capitalize }}</span>
+                </div>
+            </div>
+            {% endif %}
+
+            <!-- Weekly Quests -->
+            <div class="quests-card">
+                <div class="quests-header">
+                    <span class="quests-icon">📜</span>
+                    <h3>Týdenní questy</h3>
+                </div>
+                <div class="quests-list">
+                    {% for quest in weekly_quests %}
+                    <div class="quest-item {% if quest.completed %}completed{% endif %}">
+                        <div class="quest-info">
+                            <span class="quest-title">{{ quest.title }}</span>
+                            <span class="quest-progress">{{ quest.progress }}/{{ quest.target }}</span>
+                        </div>
+                        <div class="quest-progress-bar">
+                            <div class="quest-fill {% if quest.completed %}completed{% endif %}"
+                                 style="width: {{ min((quest.progress|default(0)) / max(1, quest.target|default(1)) * 100, 100)|int }}%"></div>
+                        </div>
+                        <span class="quest-xp">+{{ quest.xp_reward }} XP</span>
+                    </div>
+                    {% else %}
+                    <p class="no-quests">Žádné aktivní questy tento týden</p>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Category Skills Section -->
+    <section class="skills-section">
+        <h2 class="section-title">Category Skills</h2>
+        <div class="skills-grid">
+            {% for skill in category_skills %}
+            <div class="skill-card">
+                <div class="skill-icon">
+                    {% if skill.category == 'Coding' %}💻
+                    {% elif skill.category == 'Learning' %}📚
+                    {% elif skill.category == 'Writing' %}✍️
+                    {% elif skill.category == 'Planning' %}📋
+                    {% elif skill.category == 'Design' %}🎨
+                    {% elif skill.category == 'Review' %}🔍
+                    {% elif skill.category == 'Meeting' %}👥
+                    {% else %}📂
+                    {% endif %}
+                </div>
+                <div class="skill-info">
+                    <span class="skill-name">{{ skill.category }}</span>
+                    <span class="skill-level">Level {{ skill.level|default(1, true) }}</span>
+                </div>
+                <div class="skill-progress">
+                    <div class="skill-bar">
+                        <div class="skill-fill" style="width: {{ min((skill.sessions_count|default(0)) / max(1, skill.next_level_sessions|default(10)) * 100, 100)|int }}%"></div>
+                    </div>
+                    <span class="skill-sessions">{{ skill.sessions_count|default(0, true) }} sessions</span>
+                </div>
+                <span class="skill-time">{{ (skill.total_minutes|default(0) / 60)|round(1) }}h celkem</span>
+            </div>
+            {% else %}
+            <p class="no-skills">Zatím žádné skills - dokončete session pro začátek!</p>
+            {% endfor %}
+        </div>
+    </section>
+
+    <!-- Summary Section -->
+    <section class="achievements-summary">
+        <div class="summary-card main-progress">
+            <div class="progress-circle" data-progress="{{ summary.percentage }}">
+                <svg viewBox="0 0 100 100">
+                    <circle class="progress-bg" cx="50" cy="50" r="45"></circle>
+                    <circle class="progress-fill" cx="50" cy="50" r="45"
+                            stroke-dasharray="{{ (summary.percentage / 100) * 283 }} 283"></circle>
+                </svg>
+                <div class="progress-text">
+                    <span class="progress-value">{{ summary.unlocked }}</span>
+                    <span class="progress-total">/ {{ summary.total }}</span>
+                </div>
+            </div>
+            <div class="summary-label">Odemceno</div>
+        </div>
+
+        <div class="summary-stats">
+            <div class="summary-stat">
+                <span class="stat-value">{{ summary.points }}</span>
+                <span class="stat-label">Body</span>
+            </div>
+            <div class="summary-stat">
+                <span class="stat-value">{{ summary.percentage|int }}%</span>
+                <span class="stat-label">Dokonceno</span>
+            </div>
+            <div class="summary-stat rarity-breakdown">
+                <div class="rarity-item common">
+                    <span class="rarity-count">{{ summary.by_rarity.common.unlocked }}/{{ summary.by_rarity.common.total }}</span>
+                    <span class="rarity-label">Common</span>
+                </div>
+                <div class="rarity-item rare">
+                    <span class="rarity-count">{{ summary.by_rarity.rare.unlocked }}/{{ summary.by_rarity.rare.total }}</span>
+                    <span class="rarity-label">Rare</span>
+                </div>
+                <div class="rarity-item epic">
+                    <span class="rarity-count">{{ summary.by_rarity.epic.unlocked }}/{{ summary.by_rarity.epic.total }}</span>
+                    <span class="rarity-label">Epic</span>
+                </div>
+                <div class="rarity-item legendary">
+                    <span class="rarity-count">{{ summary.by_rarity.legendary.unlocked }}/{{ summary.by_rarity.legendary.total }}</span>
+                    <span class="rarity-label">Legendary</span>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Filter Tabs -->
+    <section class="filter-section">
+        <div class="filter-tabs">
+            <button class="filter-tab active" data-filter="all">Vse ({{ achievements|length }})</button>
+            <button class="filter-tab" data-filter="unlocked">Odemceno ({{ summary.unlocked }})</button>
+            <button class="filter-tab" data-filter="locked">Zamceno ({{ summary.total - summary.unlocked }})</button>
+            <button class="filter-tab" data-filter="in-progress">V prubehu</button>
+        </div>
+        <div class="filter-rarity">
+            <button class="rarity-filter active" data-rarity="all">Vse</button>
+            <button class="rarity-filter" data-rarity="common">Common</button>
+            <button class="rarity-filter" data-rarity="rare">Rare</button>
+            <button class="rarity-filter" data-rarity="epic">Epic</button>
+            <button class="rarity-filter" data-rarity="legendary">Legendary</button>
+        </div>
+        <div class="filter-category">
+            <select id="category-filter">
+                <option value="all">Vsechny kategorie</option>
+                <option value="sessions">Sessions</option>
+                <option value="streak">Streak</option>
+                <option value="preset">Preset</option>
+                <option value="productivity">Produktivita</option>
+                <option value="time">Casove</option>
+                <option value="category">Kategorie</option>
+                <option value="planning">Planovani</option>
+                <option value="combo">Combo</option>
+                <option value="secret">Secret/Hidden</option>
+                <option value="category_mastery">Category Mastery</option>
+                <option value="cross_category">Cross-Category</option>
+            </select>
+        </div>
+    </section>
+
+    <!-- Achievements Grid -->
+    <section class="achievements-grid">
+        {% for ach in achievements %}
+        <div class="achievement-card {{ ach.rarity }} {% if ach.unlocked %}unlocked{% else %}locked{% endif %} {% if ach.percentage >= 50 and not ach.unlocked %}in-progress{% endif %}"
+             data-category="{{ ach.category }}"
+             data-rarity="{{ ach.rarity }}"
+             data-unlocked="{{ 'true' if ach.unlocked else 'false' }}"
+             data-progress="{{ ach.percentage }}">
+
+            <div class="achievement-icon">
+                <span class="icon-emoji">{{ ach.icon }}</span>
+                {% if ach.unlocked %}
+                <span class="unlock-badge">&#10003;</span>
+                {% endif %}
+            </div>
+
+            <div class="achievement-info">
+                <h3 class="achievement-name">{{ ach.name }}</h3>
+                <p class="achievement-description">{{ ach.description }}</p>
+
+                <div class="achievement-progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: {{ ach.percentage }}%"></div>
+                    </div>
+                    <span class="progress-text">{{ ach.progress }} / {{ ach.target }}</span>
+                </div>
+
+                <div class="achievement-meta">
+                    <span class="achievement-points">+{{ ach.points }} pts</span>
+                    <span class="achievement-rarity rarity-{{ ach.rarity }}">{{ ach.rarity|capitalize }}</span>
+                    {% if ach.unlocked and ach.unlocked_at %}
+                    <span class="achievement-date">{{ ach.unlocked_at }}</span>
+                    {% endif %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </section>
+
+    <!-- Empty State -->
+    <div class="empty-state" style="display: none;">
+        <span class="empty-icon">&#128269;</span>
+        <p>Zadne achievements neodpovidaji filtrum</p>
+    </div>
+</div>
+
+<!-- Achievement Toast Container -->
+<div id="achievement-toast-container"></div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/achievements.js') }}"></script>
+{% endblock %}

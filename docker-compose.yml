@@ -24,11 +24,29 @@ services:
       - "5001:5001"
     depends_on:
       - mongodb
+      - ollama
     environment:
       - MONGO_URI=mongodb://mongodb:27017/pomodoro
       - FLASK_ENV=development
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=mistral:7b
+      - OLLAMA_ENABLED=true
+      - OLLAMA_TIMEOUT=30
     volumes:
       - ./ml-service:/app
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: pomodoro-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
     restart: unless-stopped
     networks:
       - pomodoro-network
@@ -67,3 +85,4 @@ networks:
 
 volumes:
   mongodb_data:
+  ollama_data:

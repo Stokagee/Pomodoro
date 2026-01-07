@@ -28,12 +28,29 @@ from models.database import (
     get_weekly_plan, save_weekly_plan,
     # Weekly Review
     get_weekly_review, generate_weekly_stats, save_weekly_review,
-    get_latest_weekly_review, get_theme_analytics
+    get_latest_weekly_review, get_theme_analytics,
+    # Achievements
+    init_achievements, get_all_achievements, check_and_unlock_achievements,
+    get_achievements_summary, ACHIEVEMENTS_DEFINITIONS,
+    # XP/Leveling System
+    get_user_profile, add_xp, calculate_level_from_xp,
+    # Streak Protection
+    use_streak_freeze, toggle_vacation_mode, check_streak_with_protection,
+    # Category Skills
+    update_category_skill, get_category_skills,
+    # Daily Challenges
+    get_or_create_daily_challenge, update_daily_challenge_progress,
+    # Weekly Quests
+    get_or_create_weekly_quests, update_weekly_quest_progress
 )
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'pomodoro-secret-key-2025')
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Add Python built-ins to Jinja2 environment
+app.jinja_env.globals['max'] = max
+app.jinja_env.globals['min'] = min
 
 # Paths
 BASE_DIR = Path(__file__).parent
@@ -77,6 +94,78 @@ def get_ml_prediction():
     return None
 
 
+def get_ml_burnout_risk():
+    """Get burnout risk assessment from ML service"""
+    try:
+        response = requests.get(f'{ML_SERVICE_URL}/api/burnout-risk', timeout=5)
+        if response.ok:
+            return response.json()
+    except Exception as e:
+        print(f"ML burnout service unavailable: {e}")
+    return None
+
+
+def get_ml_optimal_schedule(sessions=6, day='today'):
+    """Get optimal schedule from Focus Optimizer ML service"""
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/optimal-schedule',
+            params={'sessions': sessions, 'day': day},
+            timeout=5
+        )
+        if response.ok:
+            return response.json()
+    except Exception as e:
+        print(f"ML optimal schedule service unavailable: {e}")
+    return None
+
+
+def get_ml_quality_prediction(preset='deep_work', category=None):
+    """Get session quality prediction from ML service"""
+    from datetime import datetime
+
+    # Calculate sessions today and minutes since last
+    today_stats = get_today_stats()
+    sessions_today = today_stats.get('sessions_count', 0)
+
+    # Get last session time
+    minutes_since_last = None
+    history = get_history(limit=1)
+    if history:
+        last_session = history[0]
+        last_time = last_session.get('timestamp')
+        if last_time:
+            try:
+                if isinstance(last_time, str):
+                    last_dt = datetime.fromisoformat(last_time.replace('Z', '+00:00'))
+                else:
+                    last_dt = last_time
+                diff = datetime.now() - last_dt.replace(tzinfo=None)
+                minutes_since_last = int(diff.total_seconds() / 60)
+            except Exception:
+                pass
+
+    try:
+        now = datetime.now()
+        response = requests.post(
+            f'{ML_SERVICE_URL}/api/predict-quality',
+            json={
+                'hour': now.hour,
+                'day': now.weekday(),
+                'preset': preset,
+                'category': category,
+                'sessions_today': sessions_today,
+                'minutes_since_last': minutes_since_last
+            },
+            timeout=5
+        )
+        if response.ok:
+            return response.json()
+    except Exception as e:
+        print(f"ML quality prediction service unavailable: {e}")
+    return None
+
+
 # Routes
 @app.route('/')
 def index():
@@ -85,14 +174,26 @@ def index():
     today_stats = get_today_stats()
     recommendation = get_ml_recommendation()
     prediction = get_ml_prediction()
+    burnout_risk = get_ml_burnout_risk()
+    optimal_schedule = get_ml_optimal_schedule()
     today_focus = get_daily_focus()  # Get today's focus theme
+
+    # New gamification data
+    user_profile = get_user_profile()
+    daily_challenge = get_or_create_daily_challenge()
+    streak_status = check_streak_with_protection()
 
     return render_template('index.html',
                            config=config,
                            today_stats=today_stats,
                            recommendation=recommendation,
                            prediction=prediction,
-                           today_focus=today_focus)
+                           burnout_risk=burnout_risk,
+                           optimal_schedule=optimal_schedule,
+                           today_focus=today_focus,
+                           user_profile=user_profile,
+                           daily_challenge=daily_challenge,
+                           streak_status=streak_status)
 
 
 @app.route('/stats')
@@ -123,11 +224,19 @@ def insights():
     except Exception:
         pass
 
+    # Get burnout risk
+    burnout = get_ml_burnout_risk()
+
+    # Get optimal schedule for Focus Optimizer
+    optimal_schedule = get_ml_optimal_schedule()
+
     return render_template('insights.html',
                            config=config,
                            today_stats=today_stats,
                            weekly_stats=weekly_stats,
-                           analysis=analysis)
+                           analysis=analysis,
+                           burnout=burnout,
+                           optimal_schedule=optimal_schedule)
 
 
 # API Routes
@@ -194,7 +303,43 @@ def api_log_session():
     from datetime import date
     update_daily_focus_stats(date.today())
 
-    return jsonify({'status': 'ok', 'session_id': session_id})
+    # === NEW GAMIFICATION SYSTEMS ===
+    # Update daily challenge progress
+    challenge_result = update_daily_challenge_progress()
+
+    # Update weekly quest progress
+    weekly_result = update_weekly_quest_progress()
+
+    # Add XP for completed session
+    base_xp = 10
+    # Bonus XP based on productivity rating
+    if rating:
+        rating_bonus = int((rating / 100) * 5)  # Up to 5 bonus XP
+        base_xp += rating_bonus
+    # Bonus XP based on duration
+    if duration >= 52:
+        base_xp += 5  # Deep work bonus
+    elif duration >= 25:
+        base_xp += 2  # Standard session bonus
+
+    xp_result = add_xp(base_xp, 'session')
+
+    # Update category skill
+    skill_result = update_category_skill(category, int(duration))
+
+    # Check for newly unlocked achievements
+    newly_unlocked = check_and_unlock_achievements()
+
+    return jsonify({
+        'status': 'ok',
+        'session_id': session_id,
+        'achievements_unlocked': newly_unlocked,
+        'xp_earned': base_xp,
+        'level_up': xp_result.get('level_up', False),
+        'new_level': xp_result.get('new_level'),
+        'challenge_completed': challenge_result.get('completed', False),
+        'quest_completed': weekly_result.get('completed', False)
+    })
 
 
 @app.route('/api/stats/today')
@@ -278,6 +423,93 @@ def api_prediction():
     if pred:
         return jsonify(pred)
     return jsonify({'error': 'ML service unavailable'}), 503
+
+
+@app.route('/api/burnout-risk')
+def api_burnout_risk():
+    """Get burnout risk assessment"""
+    risk = get_ml_burnout_risk()
+    if risk:
+        return jsonify(risk)
+    return jsonify({
+        'error': 'ML service unavailable',
+        'risk_level': 'unknown',
+        'risk_score': 0
+    }), 503
+
+
+@app.route('/api/anomalies')
+def api_anomalies():
+    """Get pattern anomaly detection from ML service.
+
+    Returns detected anomalies in user behavior:
+    - productivity_drop: Sudden decline in productivity
+    - unusual_hours: Working outside normal schedule
+    - category_shift: Change in preferred categories
+    - streak_break: Missing days after long streak
+    - overwork_spike: Sudden increase in work intensity
+    - quality_decline: Drop in session ratings
+    """
+    try:
+        response = requests.get(f'{ML_SERVICE_URL}/api/detect-anomalies', timeout=5)
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"ML anomaly detection service unavailable: {e}")
+
+    return jsonify({
+        'error': 'ML service unavailable',
+        'anomalies_detected': 0,
+        'overall_status': 'error',
+        'anomalies': [],
+        'proactive_tips': [],
+        'baseline_summary': None,
+        'patterns': None,
+        'confidence': 0.0,
+        'metadata': {
+            'model_version': '1.0',
+            'error': 'Service unavailable'
+        }
+    }), 503
+
+
+@app.route('/api/quality-prediction', methods=['GET', 'POST'])
+def api_quality_prediction():
+    """Get session quality prediction before starting
+
+    Query params or JSON body:
+        preset: Preset name (default: deep_work)
+        category: Category name (optional)
+
+    Returns:
+        dict: Prediction with productivity, factors, recommendation
+    """
+    # Get parameters from request
+    if request.method == 'POST' and request.is_json:
+        data = request.get_json()
+        preset = data.get('preset', 'deep_work')
+        category = data.get('category')
+    else:
+        preset = request.args.get('preset', 'deep_work')
+        category = request.args.get('category')
+
+    prediction = get_ml_quality_prediction(preset, category)
+    if prediction:
+        return jsonify(prediction)
+
+    # Return default prediction when ML service unavailable
+    return jsonify({
+        'error': 'ML service unavailable',
+        'predicted_productivity': 70.0,
+        'confidence': 0,
+        'factors': [],
+        'recommendation': {
+            'type': 'info',
+            'message': 'ML sluzba neni dostupna',
+            'action': None,
+            'icon': 'info'
+        }
+    }), 503
 
 
 # =============================================================================
@@ -672,6 +904,344 @@ def api_weekly_trend():
     return jsonify(weeks_data)
 
 
+# =============================================================================
+# ACHIEVEMENTS ROUTES & API
+# =============================================================================
+
+@app.route('/achievements')
+def achievements():
+    """Achievements page - gamification trophy room"""
+    config = load_config()
+    today_stats = get_today_stats()
+    achievements_data = get_all_achievements()
+    summary = get_achievements_summary()
+
+    # New gamification data
+    user_profile = get_user_profile()
+    daily_challenge = get_or_create_daily_challenge()
+    weekly_quests = get_or_create_weekly_quests()
+    category_skills = get_category_skills()
+
+    return render_template('achievements.html',
+                           config=config,
+                           today_stats=today_stats,
+                           achievements=achievements_data,
+                           summary=summary,
+                           definitions=ACHIEVEMENTS_DEFINITIONS,
+                           user_profile=user_profile,
+                           daily_challenge=daily_challenge,
+                           weekly_quests=weekly_quests,
+                           category_skills=category_skills)
+
+
+@app.route('/api/achievements')
+def api_get_achievements():
+    """Get all achievements with progress"""
+    achievements_data = get_all_achievements()
+    return jsonify({
+        'success': True,
+        'achievements': achievements_data,
+        'total': len(achievements_data)
+    })
+
+
+@app.route('/api/achievements/stats')
+def api_achievements_stats():
+    """Get achievements summary statistics"""
+    summary = get_achievements_summary()
+    return jsonify({
+        'success': True,
+        'stats': summary
+    })
+
+
+@app.route('/api/achievements/check', methods=['POST'])
+def api_check_achievements():
+    """Manually trigger achievement check and return newly unlocked"""
+    newly_unlocked = check_and_unlock_achievements()
+    return jsonify({
+        'success': True,
+        'newly_unlocked': newly_unlocked,
+        'count': len(newly_unlocked)
+    })
+
+
+# =============================================================================
+# XP & PROFILE ROUTES
+# =============================================================================
+
+@app.route('/api/profile')
+def api_get_profile():
+    """Get user profile with XP, level, and title"""
+    profile = get_user_profile()
+    return jsonify({
+        'success': True,
+        'profile': profile
+    })
+
+
+@app.route('/api/xp/add', methods=['POST'])
+def api_add_xp():
+    """Manually add XP (for testing or special rewards)"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    amount = data.get('amount', 0)
+    source = data.get('source', 'manual')
+
+    if not isinstance(amount, (int, float)) or amount <= 0 or amount > 10000:
+        return jsonify({'error': 'Invalid XP amount (1-10000)'}), 400
+
+    result = add_xp(int(amount), source)
+    return jsonify({
+        'success': True,
+        'result': result
+    })
+
+
+@app.route('/api/level')
+def api_get_level():
+    """Get current level info"""
+    profile = get_user_profile()
+    return jsonify({
+        'success': True,
+        'level': profile.get('level', 1),
+        'title': profile.get('title', 'Zacatecnik'),
+        'xp': profile.get('xp', 0),
+        'xp_to_next_level': profile.get('xp_to_next_level', 100)
+    })
+
+
+# =============================================================================
+# DAILY CHALLENGES ROUTES
+# =============================================================================
+
+@app.route('/api/challenges/daily')
+def api_get_daily_challenge():
+    """Get today's daily challenge"""
+    challenge = get_or_create_daily_challenge()
+    return jsonify({
+        'success': True,
+        'challenge': challenge
+    })
+
+
+@app.route('/api/challenges/daily/progress', methods=['POST'])
+def api_update_daily_progress():
+    """Update daily challenge progress"""
+    result = update_daily_challenge_progress()
+    return jsonify({
+        'success': True,
+        'result': result
+    })
+
+
+# =============================================================================
+# WEEKLY QUESTS ROUTES
+# =============================================================================
+
+@app.route('/api/challenges/weekly')
+def api_get_weekly_quests():
+    """Get this week's quests"""
+    quests = get_or_create_weekly_quests()
+    return jsonify({
+        'success': True,
+        'quests': quests
+    })
+
+
+@app.route('/api/challenges/weekly/progress', methods=['POST'])
+def api_update_weekly_progress():
+    """Update weekly quest progress"""
+    data = request.json
+    quest_id = data.get('quest_id') if data else None
+
+    result = update_weekly_quest_progress(quest_id)
+    return jsonify({
+        'success': True,
+        'result': result
+    })
+
+
+# =============================================================================
+# STREAK PROTECTION ROUTES
+# =============================================================================
+
+@app.route('/api/streak/status')
+def api_streak_status():
+    """Get streak status with protection info"""
+    status = check_streak_with_protection()
+    return jsonify({
+        'success': True,
+        'streak': status
+    })
+
+
+@app.route('/api/streak/freeze', methods=['POST'])
+def api_use_streak_freeze():
+    """Use a streak freeze token"""
+    result = use_streak_freeze()
+    return jsonify({
+        'success': result.get('success', False),
+        'result': result
+    })
+
+
+@app.route('/api/streak/vacation', methods=['POST'])
+def api_toggle_vacation():
+    """Toggle vacation mode"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    enable = data.get('enable', True)
+    days = data.get('days', 7)
+
+    if not isinstance(days, int) or days < 1 or days > 30:
+        days = 7
+
+    result = toggle_vacation_mode(enable, days)
+    return jsonify({
+        'success': True,
+        'result': result
+    })
+
+
+# =============================================================================
+# CATEGORY SKILLS ROUTES
+# =============================================================================
+
+@app.route('/api/skills')
+def api_get_skills():
+    """Get all category skills"""
+    skills = get_category_skills()
+    return jsonify({
+        'success': True,
+        'skills': skills
+    })
+
+
+@app.route('/api/skills/<category>')
+def api_get_skill(category):
+    """Get skill for a specific category"""
+    skills = get_category_skills()
+
+    # Find the specific category
+    skill = next((s for s in skills if s.get('category') == category), None)
+
+    if skill:
+        return jsonify({
+            'success': True,
+            'skill': skill
+        })
+
+    return jsonify({
+        'success': False,
+        'error': f'Category "{category}" not found'
+    }), 404
+
+
+# =============================================================================
+# AI CHALLENGES PROXY ROUTES (from ML service)
+# =============================================================================
+
+@app.route('/api/ai/daily-challenge')
+def api_ai_daily_challenge():
+    """Get AI-generated daily challenge from ML service"""
+    try:
+        # Get user context for personalization
+        today_stats = get_today_stats()
+        profile = get_user_profile()
+
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/daily-challenge',
+            params={
+                'sessions_today': today_stats.get('sessions_count', 0),
+                'level': profile.get('level', 1)
+            },
+            timeout=10
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI daily challenge service unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/weekly-quest')
+def api_ai_weekly_quest():
+    """Get AI-generated weekly quest from ML service"""
+    try:
+        profile = get_user_profile()
+        weekly_stats = get_weekly_stats()
+
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/weekly-quest',
+            params={
+                'level': profile.get('level', 1),
+                'weekly_sessions': weekly_stats.get('sessions_count', 0)
+            },
+            timeout=10
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI weekly quest service unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/motivation')
+def api_ai_motivation():
+    """Get AI-generated motivation message"""
+    try:
+        today_stats = get_today_stats()
+        streak = get_streak_stats()
+
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/motivation',
+            params={
+                'sessions_today': today_stats.get('sessions_count', 0),
+                'streak': streak.get('current_streak', 0)
+            },
+            timeout=10
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI motivation service unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'fallback': True,
+        'message': 'Pokracuj v praci! Kazda session te posouvá blíz k cíli.'
+    })
+
+
+@app.route('/api/ai/health')
+def api_ai_health():
+    """Check AI/Ollama service health"""
+    try:
+        response = requests.get(f'{ML_SERVICE_URL}/api/ai/health', timeout=5)
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI health check failed: {e}")
+
+    return jsonify({
+        'status': 'unavailable',
+        'ollama_connected': False
+    })
+
+
 # WebSocket Events
 @socketio.on('connect')
 def handle_connect():
@@ -682,13 +1252,18 @@ def handle_connect():
 @socketio.on('timer_complete')
 def handle_timer_complete(data):
     """Timer completed - log session"""
+    preset = data.get('preset', 'deep_work')
+    category = data.get('category', 'Other')
+    duration = data.get('duration_minutes', 52)
+    rating = data.get('productivity_rating')
+
     session_id = log_session(
-        preset=data.get('preset', 'deep_work'),
-        category=data.get('category', 'Other'),
+        preset=preset,
+        category=category,
         task=data.get('task', ''),
-        duration_minutes=data.get('duration_minutes', 52),
+        duration_minutes=duration,
         completed=True,
-        productivity_rating=data.get('productivity_rating'),
+        productivity_rating=rating,
         notes=data.get('notes', '')
     )
 
@@ -696,7 +1271,58 @@ def handle_timer_complete(data):
     from datetime import date
     update_daily_focus_stats(date.today())
 
-    emit('session_logged', {'status': 'ok', 'session_id': session_id})
+    # === NEW GAMIFICATION SYSTEMS ===
+    # Update daily challenge progress
+    challenge_result = update_daily_challenge_progress()
+
+    # Update weekly quest progress
+    weekly_result = update_weekly_quest_progress()
+
+    # Add XP for completed session
+    base_xp = 10
+    if rating:
+        rating_bonus = int((rating / 100) * 5)
+        base_xp += rating_bonus
+    if duration >= 52:
+        base_xp += 5
+    elif duration >= 25:
+        base_xp += 2
+
+    xp_result = add_xp(base_xp, 'session')
+
+    # Update category skill
+    update_category_skill(category, int(duration))
+
+    # Check for newly unlocked achievements
+    newly_unlocked = check_and_unlock_achievements()
+
+    emit('session_logged', {
+        'status': 'ok',
+        'session_id': session_id,
+        'xp_earned': base_xp,
+        'level_up': xp_result.get('level_up', False),
+        'new_level': xp_result.get('new_level'),
+        'challenge_completed': challenge_result.get('completed', False),
+        'quest_completed': weekly_result.get('completed', False)
+    })
+
+    # Emit achievement notifications for each newly unlocked
+    for achievement in newly_unlocked:
+        emit('achievement_unlocked', achievement)
+
+    # Emit level up notification
+    if xp_result.get('level_up'):
+        emit('level_up', {
+            'new_level': xp_result.get('new_level'),
+            'new_title': xp_result.get('new_title')
+        })
+
+    # Emit challenge completion notification
+    if challenge_result.get('completed'):
+        emit('challenge_completed', {
+            'type': 'daily',
+            'xp_reward': challenge_result.get('xp_reward', 0)
+        })
 
 
 @socketio.on('request_stats')

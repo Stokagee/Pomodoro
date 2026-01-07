@@ -93,8 +93,213 @@ class PomodoroCalendar {
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
                 document.querySelectorAll('.modal-overlay').forEach(m => m.classList.add('hidden'));
+                document.getElementById('confirm-dialog')?.classList.add('hidden');
             }
         });
+    }
+
+    // === Toast Notification System ===
+
+    showToast(message, type = 'info', duration = 4000) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+
+        const icons = {
+            success: '✓',
+            error: '✕',
+            warning: '⚠',
+            info: 'ℹ'
+        };
+
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.innerHTML = `
+            <span class="toast-icon">${icons[type] || icons.info}</span>
+            <span class="toast-message">${message}</span>
+            <button class="toast-close">&times;</button>
+        `;
+
+        // Close button handler
+        toast.querySelector('.toast-close').addEventListener('click', () => {
+            this.dismissToast(toast);
+        });
+
+        container.appendChild(toast);
+
+        // Auto-dismiss after duration
+        if (duration > 0) {
+            setTimeout(() => this.dismissToast(toast), duration);
+        }
+
+        return toast;
+    }
+
+    dismissToast(toast) {
+        if (!toast || !toast.parentElement) return;
+
+        toast.style.animation = 'toastSlideOut 0.3s ease forwards';
+        setTimeout(() => toast.remove(), 300);
+    }
+
+    // === Confirmation Dialog ===
+
+    showConfirmDialog(options = {}) {
+        return new Promise((resolve) => {
+            const dialog = document.getElementById('confirm-dialog');
+            const iconEl = document.getElementById('confirm-dialog-icon');
+            const titleEl = document.getElementById('confirm-dialog-title');
+            const messageEl = document.getElementById('confirm-dialog-message');
+            const cancelBtn = document.getElementById('confirm-dialog-cancel');
+            const confirmBtn = document.getElementById('confirm-dialog-confirm');
+
+            // Set content
+            iconEl.textContent = options.icon || '⚠️';
+            titleEl.textContent = options.title || 'Potvrdit akci';
+            messageEl.textContent = options.message || 'Opravdu chcete pokračovat?';
+            cancelBtn.textContent = options.cancelText || 'Zrušit';
+            confirmBtn.textContent = options.confirmText || 'Potvrdit';
+
+            // Set button style
+            confirmBtn.className = `btn ${options.danger ? 'btn-danger' : 'btn-primary'}`;
+
+            const cleanup = () => {
+                dialog.classList.add('hidden');
+                cancelBtn.removeEventListener('click', handleCancel);
+                confirmBtn.removeEventListener('click', handleConfirm);
+                dialog.removeEventListener('click', handleOverlay);
+            };
+
+            const handleCancel = () => {
+                cleanup();
+                resolve(false);
+            };
+
+            const handleConfirm = () => {
+                cleanup();
+                resolve(true);
+            };
+
+            const handleOverlay = (e) => {
+                if (e.target === dialog) {
+                    handleCancel();
+                }
+            };
+
+            cancelBtn.addEventListener('click', handleCancel);
+            confirmBtn.addEventListener('click', handleConfirm);
+            dialog.addEventListener('click', handleOverlay);
+
+            dialog.classList.remove('hidden');
+        });
+    }
+
+    // === Loading State Helpers ===
+
+    setButtonLoading(button, isLoading) {
+        if (!button) return;
+        if (isLoading) {
+            button.classList.add('loading');
+            button.disabled = true;
+        } else {
+            button.classList.remove('loading');
+            button.disabled = false;
+        }
+    }
+
+    setModalLoading(modalBody, isLoading) {
+        if (!modalBody) return;
+        if (isLoading) {
+            modalBody.classList.add('modal-loading');
+        } else {
+            modalBody.classList.remove('modal-loading');
+        }
+    }
+
+    setCalendarLoading(isLoading) {
+        const monthGrid = document.getElementById('calendar-grid');
+        const weekGrid = document.getElementById('week-grid');
+
+        if (isLoading) {
+            monthGrid?.classList.add('loading');
+            weekGrid?.classList.add('loading');
+        } else {
+            monthGrid?.classList.remove('loading');
+            weekGrid?.classList.remove('loading');
+        }
+    }
+
+    // === ML Insights Integration ===
+
+    async fetchMLInsights(weekStart) {
+        try {
+            // ML service runs on port 5001
+            const response = await fetch(`http://localhost:5001/api/weekly-insights/${weekStart}`, {
+                method: 'GET',
+                headers: { 'Accept': 'application/json' }
+            });
+
+            if (!response.ok) {
+                throw new Error(`ML service responded with ${response.status}`);
+            }
+
+            return await response.json();
+        } catch (error) {
+            console.warn('ML insights unavailable:', error.message);
+            // Return fallback data when ML service is unavailable
+            return {
+                predicted_sessions: null,
+                recommended_focus: null,
+                tip: 'ML service není dostupný. Zkontrolujte, zda běží na portu 5001.',
+                productivity_trend: null
+            };
+        }
+    }
+
+    populateMLInsights(mlData) {
+        const predictionEl = document.getElementById('ml-prediction');
+        const recommendationEl = document.getElementById('ml-recommendation');
+        const tipEl = document.getElementById('ml-tip');
+
+        if (!mlData) {
+            predictionEl.textContent = '-';
+            recommendationEl.textContent = '-';
+            tipEl.textContent = 'ML insights budou dostupné po nasbírání více dat.';
+            return;
+        }
+
+        // Prediction
+        if (mlData.predicted_sessions !== null && mlData.predicted_sessions !== undefined) {
+            predictionEl.textContent = `${mlData.predicted_sessions} sessions`;
+        } else {
+            predictionEl.textContent = '-';
+        }
+
+        // Recommended focus
+        if (mlData.recommended_focus) {
+            const icon = window.APP_CONFIG.categoryIcons[mlData.recommended_focus] || '🎯';
+            recommendationEl.innerHTML = `${icon} ${mlData.recommended_focus}`;
+        } else {
+            recommendationEl.textContent = '-';
+        }
+
+        // Tip
+        if (mlData.tip) {
+            tipEl.textContent = mlData.tip;
+        } else {
+            tipEl.textContent = 'Pokračuj ve sbírání dat pro personalizované insights.';
+        }
+
+        // Add trend indicator if available
+        if (mlData.productivity_trend !== null && mlData.productivity_trend !== undefined) {
+            const trendEl = document.querySelector('.ml-insights-section .insight-item:last-child .insight-text');
+            if (trendEl && mlData.productivity_trend !== 0) {
+                const trendIcon = mlData.productivity_trend > 0 ? '📈' : '📉';
+                const trendText = mlData.productivity_trend > 0
+                    ? `+${mlData.productivity_trend}%`
+                    : `${mlData.productivity_trend}%`;
+                tipEl.innerHTML = `${mlData.tip} <span class="ml-trend">${trendIcon} ${trendText}</span>`;
+            }
+        }
     }
 
     // === Navigation ===
@@ -136,6 +341,8 @@ class PomodoroCalendar {
     // === Data Loading ===
 
     async loadCalendarData() {
+        this.setCalendarLoading(true);
+
         try {
             const year = this.currentDate.getFullYear();
             const month = this.currentDate.getMonth() + 1;
@@ -185,6 +392,9 @@ class PomodoroCalendar {
             }
         } catch (error) {
             console.error('Failed to load calendar data:', error);
+            this.showToast('Chyba při načítání kalendáře', 'error');
+        } finally {
+            this.setCalendarLoading(false);
         }
     }
 
@@ -554,7 +764,7 @@ class PomodoroCalendar {
         // Check if theme already exists
         const exists = this.focusThemes.some(t => t.theme === theme);
         if (exists) {
-            alert(`Téma "${theme}" už je přidané.`);
+            this.showToast(`Téma "${theme}" už je přidané.`, 'warning');
             return;
         }
 
@@ -571,9 +781,20 @@ class PomodoroCalendar {
         this.renderFocusThemes();
     }
 
-    removeFocusTheme(index) {
-        this.focusThemes.splice(index, 1);
-        this.renderFocusThemes();
+    async removeFocusTheme(index) {
+        const theme = this.focusThemes[index];
+        const confirmed = await this.showConfirmDialog({
+            icon: '🗑️',
+            title: 'Odebrat téma',
+            message: `Opravdu chcete odebrat téma "${theme.theme}"?`,
+            confirmText: 'Odebrat',
+            danger: true
+        });
+
+        if (confirmed) {
+            this.focusThemes.splice(index, 1);
+            this.renderFocusThemes();
+        }
     }
 
     closeFocusModal() {
@@ -584,6 +805,9 @@ class PomodoroCalendar {
 
     async saveFocus() {
         if (!this.selectedDate) return;
+
+        const saveBtn = document.getElementById('save-focus');
+        this.setButtonLoading(saveBtn, true);
 
         const data = {
             date: this.selectedDate,
@@ -602,15 +826,18 @@ class PomodoroCalendar {
 
             if (result.success) {
                 this.closeFocusModal();
+                this.showToast('Zaměření dne uloženo', 'success');
                 await this.loadCalendarData();
                 await this.loadTodayFocus();
                 this.render();
             } else {
-                alert('Chyba při ukládání: ' + result.error);
+                this.showToast('Chyba při ukládání: ' + result.error, 'error');
             }
         } catch (error) {
             console.error('Failed to save focus:', error);
-            alert('Chyba při ukládání');
+            this.showToast('Chyba při ukládání', 'error');
+        } finally {
+            this.setButtonLoading(saveBtn, false);
         }
     }
 
@@ -690,9 +917,18 @@ class PomodoroCalendar {
                 <span class="goal-text">${goal}</span>
                 <button class="goal-delete" data-index="${index}">&times;</button>
             `;
-            item.querySelector('.goal-delete').addEventListener('click', () => {
-                this.weeklyGoals.splice(index, 1);
-                this.renderWeeklyGoals();
+            item.querySelector('.goal-delete').addEventListener('click', async () => {
+                const confirmed = await this.showConfirmDialog({
+                    icon: '🗑️',
+                    title: 'Odebrat cíl',
+                    message: `Opravdu chcete odebrat cíl "${goal}"?`,
+                    confirmText: 'Odebrat',
+                    danger: true
+                });
+                if (confirmed) {
+                    this.weeklyGoals.splice(index, 1);
+                    this.renderWeeklyGoals();
+                }
             });
             container.appendChild(item);
         });
@@ -713,6 +949,9 @@ class PomodoroCalendar {
     }
 
     async saveWeeklyPlan() {
+        const saveBtn = document.getElementById('save-planning');
+        this.setButtonLoading(saveBtn, true);
+
         const weekStart = this.getWeekStart(this.currentDate);
 
         // Collect days data
@@ -745,15 +984,18 @@ class PomodoroCalendar {
 
             if (result.success) {
                 this.closePlanningModal();
+                this.showToast('Týdenní plán uložen', 'success');
                 await this.loadCalendarData();
                 await this.loadTodayFocus();
                 this.render();
             } else {
-                alert('Chyba při ukládání: ' + result.error);
+                this.showToast('Chyba při ukládání: ' + result.error, 'error');
             }
         } catch (error) {
             console.error('Failed to save weekly plan:', error);
-            alert('Chyba při ukládání');
+            this.showToast('Chyba při ukládání', 'error');
+        } finally {
+            this.setButtonLoading(saveBtn, false);
         }
     }
 
@@ -761,6 +1003,7 @@ class PomodoroCalendar {
 
     async openWeeklyReview() {
         const modal = document.getElementById('review-modal');
+        const modalBody = modal.querySelector('.modal-body');
 
         // Get last completed week
         const today = new Date();
@@ -769,23 +1012,38 @@ class PomodoroCalendar {
         const lastWeekEnd = new Date(lastWeekStart);
         lastWeekEnd.setDate(lastWeekEnd.getDate() + 6);
 
+        const weekStartStr = this.formatDate(lastWeekStart);
+
         // Update title
         document.getElementById('review-week-title').textContent =
             `Weekly Review: ${lastWeekStart.getDate()}.${lastWeekStart.getMonth() + 1}. - ${lastWeekEnd.getDate()}.${lastWeekEnd.getMonth() + 1}.${lastWeekEnd.getFullYear()}`;
 
-        // Load review data
-        try {
-            const response = await fetch(`/api/review/week/${this.formatDate(lastWeekStart)}`);
-            const data = await response.json();
+        // Show modal immediately with loading state
+        modal.classList.remove('hidden');
+        this.setModalLoading(modalBody, true);
 
-            if (data.success) {
-                this.populateReviewData(data.review, data.stats);
+        // Load review data and ML insights in parallel
+        try {
+            const [reviewResponse, mlData] = await Promise.all([
+                fetch(`/api/review/week/${weekStartStr}`),
+                this.fetchMLInsights(weekStartStr)
+            ]);
+
+            const reviewData = await reviewResponse.json();
+
+            if (reviewData.success) {
+                this.populateReviewData(reviewData.review, reviewData.stats);
             }
+
+            // Populate ML insights (overrides any existing ml_insights from backend)
+            this.populateMLInsights(mlData);
+
         } catch (error) {
             console.error('Failed to load weekly review:', error);
+            this.showToast('Chyba při načítání review dat', 'error');
+        } finally {
+            this.setModalLoading(modalBody, false);
         }
-
-        modal.classList.remove('hidden');
     }
 
     populateReviewData(review, stats) {
@@ -883,9 +1141,18 @@ class PomodoroCalendar {
                 <span class="goal-text">${goal}</span>
                 <button class="goal-delete" data-index="${index}">&times;</button>
             `;
-            item.querySelector('.goal-delete').addEventListener('click', () => {
-                this.nextWeekGoals.splice(index, 1);
-                this.renderNextWeekGoals();
+            item.querySelector('.goal-delete').addEventListener('click', async () => {
+                const confirmed = await this.showConfirmDialog({
+                    icon: '🗑️',
+                    title: 'Odebrat cíl',
+                    message: `Opravdu chcete odebrat cíl "${goal}"?`,
+                    confirmText: 'Odebrat',
+                    danger: true
+                });
+                if (confirmed) {
+                    this.nextWeekGoals.splice(index, 1);
+                    this.renderNextWeekGoals();
+                }
             });
             container.appendChild(item);
         });
@@ -906,6 +1173,9 @@ class PomodoroCalendar {
     }
 
     async saveWeeklyReview() {
+        const saveBtn = document.getElementById('save-review');
+        this.setButtonLoading(saveBtn, true);
+
         const today = new Date();
         const lastWeekStart = this.getWeekStart(today);
         lastWeekStart.setDate(lastWeekStart.getDate() - 7);
@@ -931,13 +1201,15 @@ class PomodoroCalendar {
 
             if (result.success) {
                 this.closeReviewModal();
-                alert('Weekly Review uložen!');
+                this.showToast('Weekly Review úspěšně uložen', 'success');
             } else {
-                alert('Chyba při ukládání: ' + result.error);
+                this.showToast('Chyba při ukládání: ' + result.error, 'error');
             }
         } catch (error) {
             console.error('Failed to save weekly review:', error);
-            alert('Chyba při ukládání');
+            this.showToast('Chyba při ukládání', 'error');
+        } finally {
+            this.setButtonLoading(saveBtn, false);
         }
     }
 

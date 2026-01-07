@@ -26,6 +26,19 @@
     </div>
     {% endif %}
 
+    <!-- Burnout Risk Widget -->
+    {% if burnout_risk and burnout_risk.risk_level != 'unknown' %}
+    <div class="ml-widget burnout-widget risk-{{ burnout_risk.risk_level }}" id="burnout-widget">
+        <div class="widget-icon">&#128293;</div>
+        <div class="widget-content">
+            <span class="widget-label">Riziko vyhoření:</span>
+            <span class="widget-value">{{ burnout_risk.risk_score }}/100</span>
+            <span class="widget-risk-badge risk-badge-{{ burnout_risk.risk_level }}">{{ burnout_risk.risk_level|upper }}</span>
+        </div>
+        <a href="/insights#burnout" class="widget-detail-link" title="Zobrazit detail">&#8594;</a>
+    </div>
+    {% endif %}
+
     <!-- Today's Focus Widget -->
     <div class="today-focus-widget" id="today-focus-widget">
         <div class="focus-widget-icon">🎯</div>
@@ -40,6 +53,109 @@
             </div>
         </div>
         <a href="/calendar" class="focus-widget-link" title="Upravit v kalendáři">&#9998;</a>
+    </div>
+
+    <!-- XP/Level Widget -->
+    <div class="level-widget" id="level-widget">
+        <div class="level-circle">
+            <span class="level-number">{{ user_profile.level|default(1, true) }}</span>
+        </div>
+        <div class="level-info">
+            <span class="level-title">{{ user_profile.title|default('Zacatecnik', true) }}</span>
+            <div class="xp-bar">
+                <div class="xp-fill" style="width: {{ ((user_profile.xp|default(0, true) - user_profile.current_level_xp|default(0, true)) / (user_profile.next_level_xp|default(100, true) - user_profile.current_level_xp|default(0, true)) * 100)|int }}%"></div>
+            </div>
+            <span class="xp-text">{{ user_profile.xp|default(0, true) }} / {{ user_profile.next_level_xp|default(100, true) }} XP</span>
+        </div>
+        <a href="/achievements" class="level-widget-link" title="Zobrazit achievements">&#127942;</a>
+    </div>
+
+    <!-- Daily Challenge Widget -->
+    {% if daily_challenge %}
+    <div class="daily-challenge-widget" id="daily-challenge-widget">
+        <div class="challenge-header">
+            <span class="challenge-icon">⚔️</span>
+            <span class="challenge-label">Denní výzva</span>
+            {% if daily_challenge.ai_generated %}
+            <span class="ai-badge">AI</span>
+            {% endif %}
+        </div>
+        <div class="challenge-content">
+            <h4 class="challenge-title">{{ daily_challenge.title|default('Dokončit 4 sessions', true) }}</h4>
+            <p class="challenge-desc">{{ daily_challenge.description|default('Splň dnešní cíl', true) }}</p>
+        </div>
+        <div class="challenge-progress">
+            <div class="challenge-progress-bar">
+                <div class="challenge-progress-fill {% if daily_challenge.completed %}completed{% endif %}"
+                     style="width: {{ min((daily_challenge.progress|default(0, true)) / max(1, daily_challenge.target|default(4, true)) * 100, 100)|int }}%"></div>
+            </div>
+            <span class="challenge-progress-text">{{ daily_challenge.progress|default(0, true) }}/{{ daily_challenge.target|default(4, true) }}</span>
+        </div>
+        <div class="challenge-footer">
+            <span class="challenge-xp-reward">+{{ daily_challenge.xp_reward|default(50, true) }} XP</span>
+            {% if daily_challenge.completed %}
+            <span class="challenge-completed-badge">✓ Splněno</span>
+            {% endif %}
+        </div>
+    </div>
+    {% endif %}
+
+    <!-- Streak Widget with Protection -->
+    <div class="streak-widget" id="streak-widget">
+        <div class="streak-fire">🔥</div>
+        <div class="streak-info">
+            <span class="streak-count">{{ streak_status.current_streak|default(0, true) }}</span>
+            <span class="streak-label">dnů v řadě</span>
+        </div>
+        {% if streak_status.vacation_mode %}
+        <span class="streak-status vacation">🏖️ Dovolená</span>
+        {% elif streak_status.protected_today %}
+        <span class="streak-status protected">🛡️ Chráněno</span>
+        {% endif %}
+        <div class="streak-freezes">
+            <span title="Dostupné freeze tokeny">❄️ {{ streak_status.freezes_available|default(0, true) }}</span>
+        </div>
+    </div>
+
+    <!-- Focus Optimizer Widget -->
+    {% if optimal_schedule and optimal_schedule.peak_hours %}
+    <div class="ml-widget focus-optimizer-widget">
+        <div class="widget-icon">&#128337;</div>
+        <div class="widget-content">
+            <span class="widget-label">Optimální čas pro práci:</span>
+            <span class="widget-value">{{ optimal_schedule.summary.best_time_range }}</span>
+            <span class="widget-reason">
+                {% if optimal_schedule.peak_hours[0] %}
+                Teď je ideální: {{ optimal_schedule.peak_hours[0].preset_name }} ({{ optimal_schedule.peak_hours[0].expected_productivity|round|int }}% produktivita)
+                {% endif %}
+            </span>
+        </div>
+        <a href="/insights#focus-optimizer" class="widget-detail-link" title="Zobrazit rozvrh">&#8594;</a>
+    </div>
+    {% endif %}
+
+    <!-- Session Quality Prediction Widget -->
+    <div class="ml-widget quality-prediction-widget" id="quality-prediction-widget">
+        <div class="prediction-score-ring" id="prediction-score-ring">
+            <svg viewBox="0 0 80 80">
+                <circle class="ring-bg" cx="40" cy="40" r="35" fill="none" stroke-width="6"/>
+                <circle class="ring-progress" id="prediction-ring-progress" cx="40" cy="40" r="35"
+                        fill="none" stroke-width="6" stroke-linecap="round"
+                        stroke-dasharray="219.91" stroke-dashoffset="219.91"
+                        transform="rotate(-90 40 40)"/>
+            </svg>
+            <span class="prediction-score-value" id="prediction-score">--</span>
+        </div>
+        <div class="prediction-content">
+            <span class="prediction-label">Očekávaná produktivita</span>
+            <div class="prediction-factors" id="prediction-factors">
+                <!-- Dynamically populated -->
+            </div>
+            <div class="prediction-recommendation" id="prediction-recommendation">
+                <span class="rec-icon">💡</span>
+                <span class="rec-text">Načítám predikci...</span>
+            </div>
+        </div>
     </div>
 
     <!-- Preset Selection -->
@@ -211,6 +327,41 @@
     </div>
 </div>
 
+<!-- Burnout Warning Modal -->
+<div class="modal-overlay" id="burnout-warning-modal" style="display: none;">
+    <div class="modal burnout-modal">
+        <div class="modal-header burnout-header">
+            <div class="burnout-warning-icon">&#9888;</div>
+            <h2>Varování: Vysoké riziko vyhoření</h2>
+            <p>Na základě tvých vzorců práce detekujeme zvýšené riziko.</p>
+        </div>
+        <div class="modal-body">
+            <div class="burnout-risk-display">
+                <div class="risk-gauge">
+                    <div class="risk-gauge-fill" id="modal-risk-gauge"></div>
+                    <span class="risk-score" id="modal-risk-score">--</span>
+                </div>
+                <span class="risk-badge" id="modal-risk-badge">--</span>
+            </div>
+
+            <div class="burnout-factors-list" id="modal-burnout-factors">
+                <!-- Dynamically populated -->
+            </div>
+
+            <div class="burnout-recommendations-list" id="modal-recommendations">
+                <!-- Top 2-3 recommendations -->
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn secondary" id="burnout-ignore">Pokračovat přesto</button>
+            <button class="modal-btn primary" id="burnout-take-break">Vzít si pauzu</button>
+        </div>
+        <div class="modal-footer-note">
+            <a href="/insights#burnout">Zobrazit kompletní analýzu &rarr;</a>
+        </div>
+    </div>
+</div>
+
 <!-- Audio for notifications -->
 <audio id="audio-work-end" preload="auto">
     <source src="{{ url_for('static', filename='sounds/work_end.wav') }}" type="audio/wav">
@@ -220,6 +371,10 @@
     <source src="{{ url_for('static', filename='sounds/break_end.wav') }}" type="audio/wav">
     <source src="{{ url_for('static', filename='sounds/break_end.mp3') }}" type="audio/mpeg">
 </audio>
+<audio id="audio-burnout-warning" preload="auto">
+    <source src="{{ url_for('static', filename='sounds/burnout_warning.wav') }}" type="audio/wav">
+    <source src="{{ url_for('static', filename='sounds/burnout_warning.mp3') }}" type="audio/mpeg">
+</audio>
 {% endblock %}
 
 {% block extra_js %}
@@ -227,5 +382,11 @@
     // Pass config to JavaScript
     const CONFIG = {{ config | tojson | safe }};
     const TODAY_STATS = {{ today_stats | tojson | safe }};
+    const BURNOUT_RISK = {{ burnout_risk | tojson | safe if burnout_risk else 'null' }};
+
+    // Gamification data
+    const USER_PROFILE = {{ user_profile | tojson | safe if user_profile else '{}' }};
+    const DAILY_CHALLENGE = {{ daily_challenge | tojson | safe if daily_challenge else 'null' }};
+    const STREAK_STATUS = {{ streak_status | tojson | safe if streak_status else '{}' }};
 </script>
 {% endblock %}
