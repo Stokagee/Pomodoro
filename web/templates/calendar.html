@@ -1,0 +1,306 @@
+{% extends "base.html" %}
+
+{% block title %}Kalendář{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/calendar.css') }}">
+{% endblock %}
+
+{% block content %}
+<div class="calendar-page">
+    <!-- Calendar Header -->
+    <div class="calendar-header">
+        <div class="calendar-nav">
+            <button class="nav-btn" id="prev-btn" title="Předchozí">
+                <span>&lt;</span>
+            </button>
+            <h2 class="calendar-title" id="calendar-title">Leden 2026</h2>
+            <button class="nav-btn" id="next-btn" title="Další">
+                <span>&gt;</span>
+            </button>
+        </div>
+        <div class="view-toggle">
+            <button class="view-btn active" data-view="month">Měsíc</button>
+            <button class="view-btn" data-view="week">Týden</button>
+        </div>
+        <div class="calendar-actions">
+            <button class="action-btn" id="today-btn">Dnes</button>
+            <button class="action-btn primary" id="plan-week-btn">Plánovat týden</button>
+            <button class="action-btn" id="review-btn">Weekly Review</button>
+        </div>
+    </div>
+
+    <!-- Today's Focus Banner -->
+    <div class="today-focus-banner" id="today-focus-banner">
+        <div class="focus-icon" id="focus-icon">🎯</div>
+        <div class="focus-info">
+            <span class="focus-label">Dnešní zaměření:</span>
+            <span class="focus-theme" id="focus-theme">Nenastaveno</span>
+        </div>
+        <div class="focus-progress">
+            <span class="progress-text" id="focus-progress">0/6 sessions</span>
+            <div class="progress-bar">
+                <div class="progress-fill" id="focus-progress-fill" style="width: 0%"></div>
+            </div>
+        </div>
+        <button class="focus-edit-btn" id="edit-today-focus">Upravit</button>
+    </div>
+
+    <!-- Calendar Grid -->
+    <div class="calendar-container">
+        <!-- Month View -->
+        <div class="calendar-view month-view" id="month-view">
+            <div class="calendar-weekdays">
+                <div class="weekday">Po</div>
+                <div class="weekday">Út</div>
+                <div class="weekday">St</div>
+                <div class="weekday">Čt</div>
+                <div class="weekday">Pá</div>
+                <div class="weekday weekend">So</div>
+                <div class="weekday weekend">Ne</div>
+            </div>
+            <div class="calendar-grid" id="calendar-grid">
+                <!-- Days will be rendered by JS -->
+            </div>
+        </div>
+
+        <!-- Week View -->
+        <div class="calendar-view week-view hidden" id="week-view">
+            <div class="week-grid" id="week-grid">
+                <!-- Week days will be rendered by JS -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Theme Legend -->
+    <div class="theme-legend">
+        <h4>Témata</h4>
+        <div class="legend-items" id="legend-items">
+            <!-- Rendered by JS from categories -->
+        </div>
+    </div>
+</div>
+
+<!-- Daily Focus Modal -->
+<div class="modal-overlay hidden" id="focus-modal">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h3 id="modal-date-title">Pondělí, 6. ledna 2026</h3>
+            <button class="modal-close" id="close-focus-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Témata dne <span class="label-hint">(můžeš přidat více)</span></label>
+                <div class="themes-list" id="focus-themes-list">
+                    <!-- Themes rendered by JS -->
+                </div>
+                <div class="add-theme-row">
+                    <select id="new-theme-select" class="form-select">
+                        <option value="">-- Přidat téma --</option>
+                        {% for category in config.categories %}
+                        <option value="{{ category }}">{{ category }}</option>
+                        {% endfor %}
+                    </select>
+                    <input type="number" id="new-theme-sessions" class="form-input sessions-input" min="1" max="20" value="1" placeholder="Sessions">
+                    <button class="btn btn-small" id="add-theme-btn">+ Přidat</button>
+                </div>
+            </div>
+            <div class="form-group">
+                <label for="focus-notes">Poznámky</label>
+                <textarea id="focus-notes" class="form-textarea" rows="4" maxlength="1000" placeholder="Poznámky ke dni..."></textarea>
+                <span class="char-counter"><span id="notes-count">0</span>/1000</span>
+            </div>
+
+            <!-- Stats for past days -->
+            <div class="day-stats hidden" id="day-stats">
+                <h4>Statistiky dne</h4>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-value" id="stat-actual">0</span>
+                        <span class="stat-label">Sessions</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="stat-productivity">0%</span>
+                        <span class="stat-label">Produktivita</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="cancel-focus">Zrušit</button>
+            <button class="btn btn-primary" id="save-focus">Uložit</button>
+        </div>
+    </div>
+</div>
+
+<!-- Weekly Planning Modal -->
+<div class="modal-overlay hidden" id="planning-modal">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h3 id="planning-week-title">Plánování týdne: 6.-12. ledna 2026</h3>
+            <button class="modal-close" id="close-planning-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <div class="planning-week-grid" id="planning-week-grid">
+                <!-- Week planning grid rendered by JS -->
+            </div>
+
+            <div class="form-group">
+                <label>Cíle na tento týden</label>
+                <div class="goals-list" id="weekly-goals">
+                    <!-- Goals rendered by JS -->
+                </div>
+                <div class="add-goal-row">
+                    <input type="text" id="new-goal-input" class="form-input" placeholder="Nový cíl...">
+                    <button class="btn btn-small" id="add-goal-btn">+ Přidat</button>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="cancel-planning">Zrušit</button>
+            <button class="btn btn-primary" id="save-planning">Uložit plán</button>
+        </div>
+    </div>
+</div>
+
+<!-- Weekly Review Modal -->
+<div class="modal-overlay hidden" id="review-modal">
+    <div class="modal-content modal-large">
+        <div class="modal-header">
+            <h3 id="review-week-title">Weekly Review: 30.12. - 5.1.2026</h3>
+            <button class="modal-close" id="close-review-modal">&times;</button>
+        </div>
+        <div class="modal-body">
+            <!-- Stats Overview -->
+            <div class="review-stats-grid" id="review-stats">
+                <div class="review-stat-card">
+                    <span class="stat-icon">📈</span>
+                    <span class="stat-value" id="review-total-sessions">0</span>
+                    <span class="stat-label">Sessions</span>
+                </div>
+                <div class="review-stat-card">
+                    <span class="stat-icon">⏱️</span>
+                    <span class="stat-value" id="review-total-hours">0h</span>
+                    <span class="stat-label">Hodin</span>
+                </div>
+                <div class="review-stat-card">
+                    <span class="stat-icon">✅</span>
+                    <span class="stat-value" id="review-completed">0%</span>
+                    <span class="stat-label">Dokončeno</span>
+                </div>
+                <div class="review-stat-card">
+                    <span class="stat-icon">⚡</span>
+                    <span class="stat-value" id="review-productivity">0%</span>
+                    <span class="stat-label">Produktivita</span>
+                </div>
+            </div>
+
+            <!-- Theme Breakdown -->
+            <div class="review-section">
+                <h4>📊 Přehled témat</h4>
+                <div class="theme-breakdown" id="theme-breakdown">
+                    <!-- Rendered by JS -->
+                </div>
+            </div>
+
+            <!-- Best Day & Trend -->
+            <div class="review-highlights">
+                <div class="highlight-item">
+                    <span class="highlight-icon">🏆</span>
+                    <span class="highlight-label">Nejlepší den:</span>
+                    <span class="highlight-value" id="best-day">-</span>
+                </div>
+                <div class="highlight-item">
+                    <span class="highlight-icon">📈</span>
+                    <span class="highlight-label">Trend:</span>
+                    <span class="highlight-value" id="week-trend">-</span>
+                </div>
+            </div>
+
+            <!-- Reflections -->
+            <div class="review-section">
+                <h4>💭 Reflexe</h4>
+                <div class="form-group">
+                    <label for="what-worked">Co fungovalo?</label>
+                    <textarea id="what-worked" class="form-textarea" rows="3" placeholder="Co se tento týden povedlo..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="what-to-improve">Co zlepšit?</label>
+                    <textarea id="what-to-improve" class="form-textarea" rows="3" placeholder="Na čem zapracovat..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label for="lessons-learned">Lessons learned</label>
+                    <textarea id="lessons-learned" class="form-textarea" rows="3" placeholder="Co jsem se naučil/a..."></textarea>
+                </div>
+            </div>
+
+            <!-- ML Insights -->
+            <div class="review-section ml-insights-section">
+                <h4>🤖 ML Insights</h4>
+                <div class="ml-insights" id="ml-insights">
+                    <div class="insight-item">
+                        <span class="insight-icon">🔮</span>
+                        <span class="insight-text">Predikce na příští týden: <strong id="ml-prediction">-</strong></span>
+                    </div>
+                    <div class="insight-item">
+                        <span class="insight-icon">🎯</span>
+                        <span class="insight-text">Doporučené zaměření: <strong id="ml-recommendation">-</strong></span>
+                    </div>
+                    <div class="insight-item">
+                        <span class="insight-icon">💡</span>
+                        <span class="insight-text" id="ml-tip">-</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Next Week Goals -->
+            <div class="review-section">
+                <h4>🎯 Cíle na příští týden</h4>
+                <div class="goals-list" id="next-week-goals">
+                    <!-- Goals rendered by JS -->
+                </div>
+                <div class="add-goal-row">
+                    <input type="text" id="new-next-goal-input" class="form-input" placeholder="Nový cíl...">
+                    <button class="btn btn-small" id="add-next-goal-btn">+ Přidat</button>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-secondary" id="cancel-review">Zrušit</button>
+            <button class="btn btn-primary" id="save-review">Uložit Review</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+    // Pass config to JS
+    window.APP_CONFIG = {
+        categories: {{ config.categories | tojson }},
+        categoryIcons: {
+            'SOAP': '🧼',
+            'Robot Framework': '🤖',
+            'REST API': '🔌',
+            'Database': '🗄️',
+            'Frontend': '🎨',
+            'Sociální sítě': '📱',
+            'Job Hunting': '💼',
+            'Learning': '📚',
+            'Other': '📌'
+        },
+        categoryColors: {
+            'SOAP': '#3b82f6',
+            'Robot Framework': '#ef4444',
+            'REST API': '#10b981',
+            'Database': '#8b5cf6',
+            'Frontend': '#ec4899',
+            'Sociální sítě': '#06b6d4',
+            'Job Hunting': '#f59e0b',
+            'Learning': '#6366f1',
+            'Other': '#94a3b8'
+        }
+    };
+</script>
+<script src="{{ url_for('static', filename='js/calendar.js') }}"></script>
+{% endblock %}

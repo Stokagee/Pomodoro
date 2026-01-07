@@ -19,12 +19,140 @@ class PomodoroTimer {
         this.pendingRating = null;
         this.selectedRating = null;
         this.lastWorkMinutes = 0;  // Track actual worked minutes for proportional break
+        this.todayFocus = null;  // Today's focus theme
 
         this.initializeSocket();
         this.initializeElements();
         this.bindEvents();
         this.initializeRatingModal();
         this.setPreset(this.currentPreset);
+        this.loadTodayFocus();  // Load daily focus
+        this.loadTimerState();  // Restore timer state from localStorage
+    }
+
+    // === Timer State Persistence (localStorage) ===
+
+    saveTimerState() {
+        const state = {
+            targetEndTime: this.targetEndTime,
+            isRunning: this.isRunning,
+            isBreak: this.isBreak,
+            currentPreset: this.currentPreset,
+            sessionCount: this.sessionCount,
+            totalSeconds: this.totalSeconds,
+            remainingSeconds: this.remainingSeconds,
+            category: this.categorySelect?.value || '',
+            task: this.taskInput?.value || '',
+            savedAt: Date.now()
+        };
+        localStorage.setItem('pomodoroTimerState', JSON.stringify(state));
+    }
+
+    loadTimerState() {
+        try {
+            const saved = localStorage.getItem('pomodoroTimerState');
+            if (!saved) return false;
+
+            const state = JSON.parse(saved);
+
+            // Check date AND age - reset if different day or older than 24 hours
+            const savedDate = new Date(state.savedAt).toDateString();
+            const today = new Date().toDateString();
+            if (savedDate !== today || Date.now() - state.savedAt > 24 * 60 * 60 * 1000) {
+                this.clearTimerState();
+                return false;
+            }
+
+            // Restore state (sessionCount is synced from DB, not localStorage)
+            this.currentPreset = state.currentPreset;
+            this.isBreak = state.isBreak;
+            this.totalSeconds = state.totalSeconds;
+
+            if (state.isRunning && state.targetEndTime) {
+                // Timer was running - recalculate remaining time
+                const now = Date.now();
+                this.remainingSeconds = Math.max(0, Math.ceil((state.targetEndTime - now) / 1000));
+
+                if (this.remainingSeconds <= 0) {
+                    // Timer completed during navigation
+                    this.clearTimerState();
+                    this.completePhase();
+                    return true;
+                }
+
+                this.targetEndTime = state.targetEndTime;
+                // Auto-start timer
+                setTimeout(() => this.start(), 100);
+            } else {
+                this.remainingSeconds = state.remainingSeconds;
+            }
+
+            // Restore UI
+            if (state.category && this.categorySelect) {
+                this.categorySelect.value = state.category;
+            }
+            if (state.task && this.taskInput) {
+                this.taskInput.value = state.task;
+            }
+
+            this.updatePresetButtons();
+            this.updatePhaseDisplay();
+            this.updateDisplay();
+            this.updateSessionDisplay();
+
+            return true;
+        } catch (e) {
+            console.log('Could not load timer state:', e);
+            return false;
+        }
+    }
+
+    clearTimerState() {
+        localStorage.removeItem('pomodoroTimerState');
+    }
+
+    async syncSessionCount() {
+        try {
+            const res = await fetch('/api/stats/today');
+            const stats = await res.json();
+            const completed = stats.completed_sessions || 0;
+            const cycle = this.config.sessions_before_long_break;
+
+            // Calculate correct sessionCount for current/next session
+            this.sessionCount = (completed % cycle) + 1;
+
+            this.updateSessionDisplay();
+            this.saveTimerState();
+
+            console.log(`Session synced: ${completed} completed → Session ${this.sessionCount}/${cycle}`);
+        } catch (e) {
+            console.error('Failed to sync session count:', e);
+        }
+    }
+
+    updatePresetButtons() {
+        this.presetBtns.forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.preset === this.currentPreset);
+        });
+        const preset = this.config.presets[this.currentPreset];
+        if (preset) {
+            document.documentElement.style.setProperty('--current-preset-color', preset.color);
+            this.progressRing.style.stroke = preset.color;
+        }
+    }
+
+    updatePhaseDisplay() {
+        if (this.isBreak) {
+            this.timerPhase.textContent = 'BREAK';
+            this.timerPhase.classList.remove('work');
+            this.timerPhase.classList.add('break');
+            this.progressRing.classList.add('break');
+        } else {
+            this.timerPhase.textContent = 'WORK';
+            this.timerPhase.classList.remove('break');
+            this.timerPhase.classList.add('work');
+            this.progressRing.classList.remove('break');
+        }
     }
 
     initializeSocket() {
@@ -374,6 +502,9 @@ class PomodoroTimer {
 
         // Update title
         this.updateTitle();
+
+        // Save state to localStorage for persistence across page navigation
+        this.saveTimerState();
     }
 
     pause() {
@@ -395,10 +526,14 @@ class PomodoroTimer {
         if (this.config.show_time_in_tab) {
             document.title = 'Paused - Pomodoro Timer';
         }
+
+        // Save state to localStorage for persistence across page navigation
+        this.saveTimerState();
     }
 
     reset() {
         this.pause();
+        this.clearTimerState();  // Clear localStorage state on reset
         this.setPreset(this.currentPreset);
     }
 
@@ -419,11 +554,17 @@ class PomodoroTimer {
         } else {
             this.updateDisplay();
             this.updateTitle();
+
+            // Save state every 10 seconds for persistence
+            if (this.remainingSeconds % 10 === 0) {
+                this.saveTimerState();
+            }
         }
     }
 
     completePhase() {
         this.pause();
+        this.clearTimerState();  // Clear localStorage state when phase completes
 
         if (!this.isBreak) {
             // Calculate actual worked time
@@ -590,6 +731,67 @@ class PomodoroTimer {
                 }
             })
             .catch(err => console.log('Could not update stats:', err));
+
+        // Also refresh today's focus stats
+        this.loadTodayFocus();
+    }
+
+    // === Daily Focus Integration ===
+
+    async loadTodayFocus() {
+        try {
+            const response = await fetch('/api/focus/today');
+            const data = await response.json();
+
+            if (data.success && data.focus) {
+                this.todayFocus = data.focus;
+                this.updateTodayFocusWidget();
+
+                // Pre-select category if not already selected
+                if (this.categorySelect && !this.categorySelect.value && data.focus.theme) {
+                    this.categorySelect.value = data.focus.theme;
+                }
+            }
+        } catch (error) {
+            console.log('Could not load today focus:', error);
+        }
+    }
+
+    updateTodayFocusWidget() {
+        // Update Today's Focus widget if it exists
+        const widget = document.getElementById('today-focus-widget');
+        if (!widget || !this.todayFocus) return;
+
+        const iconEl = widget.querySelector('.focus-widget-icon');
+        const themeEl = widget.querySelector('.focus-widget-theme');
+        const progressEl = widget.querySelector('.focus-widget-progress');
+        const fillEl = widget.querySelector('.focus-widget-fill');
+
+        if (iconEl && this.todayFocus.theme) {
+            const icons = {
+                'Coding': '💻', 'Learning': '📚', 'Writing': '✍️',
+                'Planning': '📋', 'Communication': '💬', 'Research': '🔍',
+                'Review': '👀', 'Meeting': '🤝', 'Admin': '📁', 'Other': '📌'
+            };
+            iconEl.textContent = icons[this.todayFocus.theme] || '🎯';
+        }
+
+        if (themeEl) {
+            themeEl.textContent = this.todayFocus.theme || 'Nenastaveno';
+        }
+
+        if (progressEl) {
+            const actual = this.todayFocus.actual_sessions || 0;
+            const planned = this.todayFocus.planned_sessions || 6;
+            progressEl.textContent = `${actual}/${planned}`;
+        }
+
+        if (fillEl) {
+            const actual = this.todayFocus.actual_sessions || 0;
+            const planned = this.todayFocus.planned_sessions || 6;
+            const percent = Math.min((actual / planned) * 100, 100);
+            fillEl.style.width = `${percent}%`;
+        }
     }
 
     playSound(type) {
@@ -630,6 +832,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Check if we have config (we're on the timer page)
     if (typeof CONFIG !== 'undefined') {
         window.pomodoroTimer = new PomodoroTimer(CONFIG);
+
+        // Sync sessionCount with database (fixes long break timing after refresh)
+        window.pomodoroTimer.syncSessionCount();
 
         // Request notification permission
         if ('Notification' in window && Notification.permission === 'default') {

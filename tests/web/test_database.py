@@ -181,9 +181,10 @@ class TestGetTodayStats:
         stats = db_module.get_today_stats()
         avg_rating = stats.get('avg_rating', 0)
 
-        # Average of 4 and 5 should be 4.5
+        # Rating 4 → 80%, Rating 5 → 100% (normalize_rating converts old 1-5 to 0-100%)
+        # Average of 80 and 100 should be 90
         if avg_rating > 0:
-            assert 4.0 <= avg_rating <= 5.0
+            assert 80.0 <= avg_rating <= 100.0
 
 
 class TestGetWeeklyStats:

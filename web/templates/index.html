@@ -26,6 +26,22 @@
     </div>
     {% endif %}
 
+    <!-- Today's Focus Widget -->
+    <div class="today-focus-widget" id="today-focus-widget">
+        <div class="focus-widget-icon">🎯</div>
+        <div class="focus-widget-content">
+            <span class="focus-widget-label">Dnešní zaměření:</span>
+            <span class="focus-widget-theme">{{ today_focus.theme if today_focus and today_focus.theme else 'Nenastaveno' }}</span>
+        </div>
+        <div class="focus-widget-stats">
+            <span class="focus-widget-progress">{{ today_focus.actual_sessions|default(0, true) }}/{{ today_focus.planned_sessions|default(6, true) }}</span>
+            <div class="focus-widget-bar">
+                <div class="focus-widget-fill" style="width: {{ ((today_focus.actual_sessions|default(0, true)) / (today_focus.planned_sessions|default(6, true)) * 100)|int }}%"></div>
+            </div>
+        </div>
+        <a href="/calendar" class="focus-widget-link" title="Upravit v kalendáři">&#9998;</a>
+    </div>
+
     <!-- Preset Selection -->
     <div class="preset-selector">
         {% for key, preset in config.presets.items() %}

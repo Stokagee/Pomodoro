@@ -20,7 +20,15 @@ load_dotenv()
 # Import database module
 from models.database import (
     init_db, log_session, get_today_stats, get_weekly_stats,
-    get_history, get_all_sessions, get_streak_stats, clear_all_sessions
+    get_history, get_all_sessions, get_streak_stats, clear_all_sessions,
+    # Calendar & Daily Focus
+    get_daily_focus, set_daily_focus, update_daily_focus_stats,
+    get_calendar_month, get_calendar_week,
+    # Weekly Planning
+    get_weekly_plan, save_weekly_plan,
+    # Weekly Review
+    get_weekly_review, generate_weekly_stats, save_weekly_review,
+    get_latest_weekly_review, get_theme_analytics
 )
 
 app = Flask(__name__)
@@ -77,12 +85,14 @@ def index():
     today_stats = get_today_stats()
     recommendation = get_ml_recommendation()
     prediction = get_ml_prediction()
+    today_focus = get_daily_focus()  # Get today's focus theme
 
     return render_template('index.html',
                            config=config,
                            today_stats=today_stats,
                            recommendation=recommendation,
-                           prediction=prediction)
+                           prediction=prediction,
+                           today_focus=today_focus)
 
 
 @app.route('/stats')
@@ -179,6 +189,11 @@ def api_log_session():
         productivity_rating=rating,
         notes=notes
     )
+
+    # Update daily focus stats after logging session
+    from datetime import date
+    update_daily_focus_stats(date.today())
+
     return jsonify({'status': 'ok', 'session_id': session_id})
 
 
@@ -265,6 +280,398 @@ def api_prediction():
     return jsonify({'error': 'ML service unavailable'}), 503
 
 
+# =============================================================================
+# CALENDAR ROUTES
+# =============================================================================
+
+@app.route('/calendar')
+def calendar():
+    """Calendar page with weekly/monthly view"""
+    config = load_config()
+    today_stats = get_today_stats()
+    today_focus = get_daily_focus()
+
+    return render_template('calendar.html',
+                           config=config,
+                           today_stats=today_stats,
+                           today_focus=today_focus)
+
+
+# =============================================================================
+# CALENDAR API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/calendar/month/<int:year>/<int:month>')
+def api_calendar_month(year, month):
+    """Get calendar data for a specific month"""
+    if not (1 <= month <= 12) or not (2000 <= year <= 2100):
+        return jsonify({'error': 'Invalid date'}), 400
+
+    data = get_calendar_month(year, month)
+    # Convert dict to array format for frontend
+    days = list(data.values())
+    return jsonify({
+        'success': True,
+        'year': year,
+        'month': month,
+        'days': days
+    })
+
+
+@app.route('/api/calendar/week/<date_str>')
+def api_calendar_week(date_str):
+    """Get calendar data for a week containing the specified date"""
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    data = get_calendar_week(target_date)
+    return jsonify(data)
+
+
+# =============================================================================
+# DAILY FOCUS API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/focus/today')
+def api_focus_today():
+    """Get today's focus"""
+    focus = get_daily_focus()
+    if focus:
+        return jsonify({'success': True, 'focus': focus})
+    return jsonify({'success': False, 'focus': {'date': None, 'themes': [], 'theme': None, 'notes': '', 'planned_sessions': 0, 'total_planned': 0}})
+
+
+@app.route('/api/focus/<date_str>')
+def api_focus_date(date_str):
+    """Get focus for a specific date"""
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    focus = get_daily_focus(target_date)
+    if focus:
+        return jsonify({'success': True, 'focus': focus})
+    return jsonify({'success': False, 'focus': {'date': date_str, 'themes': [], 'theme': None, 'notes': '', 'planned_sessions': 0, 'total_planned': 0}})
+
+
+@app.route('/api/focus', methods=['POST'])
+def api_set_focus():
+    """Set or update daily focus with multiple themes"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    date_str = data.get('date')
+    if not date_str:
+        return jsonify({'error': 'Date is required'}), 400
+
+    # Validate date
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    config = load_config()
+
+    # Handle both old format (single theme) and new format (themes array)
+    themes = data.get('themes', [])
+    if not themes and data.get('theme'):
+        # Backward compatibility: convert single theme to array
+        themes = [{
+            'theme': data.get('theme'),
+            'planned_sessions': data.get('planned_sessions', 1),
+            'notes': ''
+        }]
+
+    # Validate themes
+    valid_themes = []
+    for t in themes:
+        theme_name = t.get('theme')
+        if theme_name and theme_name in config['categories']:
+            valid_themes.append({
+                'theme': theme_name,
+                'planned_sessions': min(max(int(t.get('planned_sessions', 1)), 1), 20),
+                'notes': str(t.get('notes', ''))[:500]
+            })
+
+    notes = str(data.get('notes', ''))[:1000]
+
+    result = set_daily_focus(target_date, valid_themes, notes)
+
+    return jsonify({
+        'success': True,
+        'date': date_str,
+        'themes': valid_themes,
+        'notes': notes
+    })
+
+
+@app.route('/api/focus/<date_str>', methods=['PUT'])
+def api_update_focus(date_str):
+    """Update existing daily focus with multiple themes"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    existing = get_daily_focus(target_date)
+    if not existing:
+        return jsonify({'error': 'Focus not found for this date'}), 404
+
+    # Handle themes array or merge with existing
+    themes = data.get('themes')
+    if themes is None:
+        # If no themes provided, keep existing themes
+        themes = existing.get('themes', [])
+        # Backward compatibility: single theme update
+        if data.get('theme'):
+            themes = [{
+                'theme': data.get('theme'),
+                'planned_sessions': data.get('planned_sessions', 1),
+                'notes': ''
+            }]
+
+    notes = str(data.get('notes', existing.get('notes', '')))[:1000]
+
+    # Validate themes
+    config = load_config()
+    valid_themes = []
+    for t in themes:
+        theme_name = t.get('theme') if isinstance(t, dict) else t
+        if theme_name and theme_name in config['categories']:
+            valid_themes.append({
+                'theme': theme_name,
+                'planned_sessions': int(t.get('planned_sessions', 1)) if isinstance(t, dict) else 1,
+                'notes': str(t.get('notes', ''))[:500] if isinstance(t, dict) else ''
+            })
+
+    result = set_daily_focus(target_date, valid_themes, notes)
+
+    return jsonify({
+        'status': 'ok',
+        'date': date_str,
+        'themes': valid_themes,
+        'notes': notes,
+        'planned_sessions': sum(t.get('planned_sessions', 0) for t in valid_themes)
+    })
+
+
+# =============================================================================
+# WEEKLY PLANNING API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/planning/week/<date_str>')
+def api_get_weekly_plan(date_str):
+    """Get weekly plan for the week containing the specified date"""
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    plan = get_weekly_plan(target_date)
+    if plan:
+        return jsonify(plan)
+
+    # Return empty plan structure
+    from datetime import timedelta
+    days_since_monday = target_date.weekday()
+    week_start = target_date - timedelta(days=days_since_monday)
+
+    return jsonify({
+        'week_start': week_start.isoformat(),
+        'days': [],
+        'goals': []
+    })
+
+
+@app.route('/api/planning/week', methods=['POST'])
+def api_save_weekly_plan():
+    """Save or update weekly plan"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    week_start = data.get('week_start')
+    days = data.get('days', [])
+    goals = data.get('goals', [])
+
+    if not week_start:
+        return jsonify({'error': 'week_start is required'}), 400
+
+    try:
+        from datetime import datetime
+        week_start_date = datetime.strptime(week_start, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    # Validate days structure
+    config = load_config()
+    valid_days = []
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        if 'date' not in day:
+            continue
+
+        theme = day.get('theme')
+        if theme and theme not in config['categories']:
+            continue
+
+        valid_days.append({
+            'date': day['date'],
+            'theme': theme,
+            'planned_sessions': day.get('planned_sessions', 6),
+            'notes': str(day.get('notes', ''))[:1000]
+        })
+
+    # Validate goals
+    valid_goals = [str(g)[:500] for g in goals if g][:10]  # Max 10 goals
+
+    result = save_weekly_plan(week_start_date, valid_days, valid_goals)
+
+    return jsonify({
+        'status': 'ok',
+        'week_start': week_start,
+        'days_saved': len(valid_days),
+        'goals': valid_goals
+    })
+
+
+# =============================================================================
+# WEEKLY REVIEW API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/review/week/<date_str>')
+def api_get_weekly_review(date_str):
+    """Get weekly review for the week containing the specified date"""
+    try:
+        from datetime import datetime
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    review = get_weekly_review(target_date)
+    if review:
+        return jsonify(review)
+
+    # Generate stats for the week even if no review exists
+    stats = generate_weekly_stats(target_date)
+
+    from datetime import timedelta
+    days_since_monday = target_date.weekday()
+    week_start = target_date - timedelta(days=days_since_monday)
+
+    return jsonify({
+        'week_start': week_start.isoformat(),
+        'stats': stats,
+        'theme_breakdown': stats.get('theme_breakdown', []),
+        'reflections': {
+            'what_worked': '',
+            'what_to_improve': '',
+            'lessons_learned': ''
+        },
+        'next_week_goals': [],
+        'ml_insights': {}
+    })
+
+
+@app.route('/api/review/week', methods=['POST'])
+def api_save_weekly_review():
+    """Save weekly review"""
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    week_start = data.get('week_start')
+    reflections = data.get('reflections', {})
+    next_week_goals = data.get('next_week_goals', [])
+
+    if not week_start:
+        return jsonify({'error': 'week_start is required'}), 400
+
+    try:
+        from datetime import datetime
+        week_start_date = datetime.strptime(week_start, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    # Get ML insights if available
+    ml_insights = {}
+    try:
+        response = requests.get(f'{ML_SERVICE_URL}/api/prediction/week', timeout=2)
+        if response.ok:
+            ml_insights = response.json()
+    except Exception:
+        pass
+
+    # Validate goals
+    valid_goals = [str(g)[:500] for g in next_week_goals if g][:10]
+
+    result = save_weekly_review(week_start_date, reflections, valid_goals, ml_insights)
+
+    return jsonify({
+        'status': 'ok',
+        'week_start': week_start
+    })
+
+
+@app.route('/api/review/latest')
+def api_latest_review():
+    """Get the most recent weekly review"""
+    review = get_latest_weekly_review()
+    if review:
+        return jsonify(review)
+    return jsonify({'error': 'No reviews found'}), 404
+
+
+# =============================================================================
+# ANALYTICS API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/analytics/themes')
+def api_theme_analytics():
+    """Get analytics for all themes/categories"""
+    analytics = get_theme_analytics()
+    return jsonify(analytics)
+
+
+@app.route('/api/analytics/weekly-trend')
+def api_weekly_trend():
+    """Get weekly trend data"""
+    from datetime import date, timedelta
+
+    today = date.today()
+    weeks_data = []
+
+    for i in range(4):  # Last 4 weeks
+        week_date = today - timedelta(weeks=i)
+        stats = generate_weekly_stats(week_date)
+
+        days_since_monday = week_date.weekday()
+        week_start = week_date - timedelta(days=days_since_monday)
+
+        weeks_data.append({
+            'week_start': week_start.isoformat(),
+            'total_sessions': stats['total_sessions'],
+            'total_hours': stats['total_hours'],
+            'avg_productivity': stats['avg_productivity']
+        })
+
+    return jsonify(weeks_data)
+
+
 # WebSocket Events
 @socketio.on('connect')
 def handle_connect():
@@ -284,6 +691,11 @@ def handle_timer_complete(data):
         productivity_rating=data.get('productivity_rating'),
         notes=data.get('notes', '')
     )
+
+    # Update daily focus stats after logging session
+    from datetime import date
+    update_daily_focus_stats(date.today())
+
     emit('session_logged', {'status': 'ok', 'session_id': session_id})
 
 
