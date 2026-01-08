@@ -1790,6 +1790,147 @@ def _get_fallback_session_suggestion():
         }
 
 
+# =============================================================================
+# START DAY WORKFLOW ROUTES
+# =============================================================================
+
+def _sync_categories_to_ml_service(categories: list) -> bool:
+    """Send categories to ML service so AI uses correct category list."""
+    try:
+        response = requests.post(
+            f'{ML_SERVICE_URL}/api/config/categories',
+            json={'categories': categories},
+            timeout=5
+        )
+        return response.ok
+    except Exception as e:
+        print(f"Failed to sync categories to ML service: {e}")
+        return False
+
+
+@app.route('/api/start-day')
+def api_start_day():
+    """Get all data needed for Start Day workflow.
+
+    Returns:
+        - categories: User's categories from config.json
+        - morning_briefing: AI analysis + predictions (from ML service)
+        - daily_challenge: Today's challenge with XP reward
+        - today_focus: Current daily focus (if already set)
+        - user_profile: Level, XP, title
+        - streak_status: Current streak with protection info
+    """
+    from datetime import date
+
+    # Load categories from config
+    config = load_config()
+    categories = config.get('categories', [])
+
+    # Sync categories to ML service for AI prompts
+    _sync_categories_to_ml_service(categories)
+
+    # Get morning briefing from ML service (with user's categories)
+    morning_briefing = None
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/morning-briefing',
+            timeout=60
+        )
+        if response.ok:
+            morning_briefing = response.json()
+    except Exception as e:
+        print(f"Morning briefing unavailable: {e}")
+
+    # Get daily challenge
+    daily_challenge = get_or_create_daily_challenge()
+
+    # Get today's focus (may be empty)
+    today_focus = get_daily_focus(date.today())
+
+    # Get user profile
+    user_profile = get_user_profile()
+
+    # Get streak status with protection
+    streak_status = check_streak_with_protection()
+
+    # Get today's stats
+    today_stats = get_today_stats()
+
+    return jsonify({
+        'success': True,
+        'categories': categories,
+        'morning_briefing': morning_briefing,
+        'daily_challenge': daily_challenge,
+        'today_focus': today_focus,
+        'user_profile': user_profile,
+        'streak_status': streak_status,
+        'today_stats': today_stats,
+        'date': date.today().isoformat()
+    })
+
+
+@app.route('/api/start-day', methods=['POST'])
+def api_save_start_day():
+    """Save Start Day plan (themes + challenge acceptance).
+
+    Request body:
+        - themes: Array of {theme, planned_sessions, notes}
+        - challenge_accepted: Boolean
+        - notes: Optional overall notes for the day
+
+    Returns:
+        - success: Boolean
+        - saved focus data
+    """
+    from datetime import date
+
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    config = load_config()
+    today = date.today()
+
+    # Process themes
+    themes = data.get('themes', [])
+    valid_themes = []
+    for t in themes:
+        theme_name = t.get('theme')
+        if theme_name and theme_name in config['categories']:
+            valid_themes.append({
+                'theme': theme_name,
+                'planned_sessions': min(max(int(t.get('planned_sessions', 1)), 1), 20),
+                'notes': str(t.get('notes', ''))[:500]
+            })
+
+    # Save daily focus
+    notes = str(data.get('notes', ''))[:1000]
+    set_daily_focus(today, valid_themes, notes)
+
+    # Handle challenge acceptance
+    challenge_accepted = data.get('challenge_accepted', False)
+    challenge_result = None
+    if challenge_accepted:
+        # Mark challenge as accepted in today's focus or similar
+        # The challenge is auto-created, so we just track acceptance
+        challenge_result = {
+            'accepted': True,
+            'challenge': get_or_create_daily_challenge()
+        }
+
+    # Calculate total planned sessions
+    total_planned = sum(t.get('planned_sessions', 0) for t in valid_themes)
+
+    return jsonify({
+        'success': True,
+        'date': today.isoformat(),
+        'themes': valid_themes,
+        'total_planned_sessions': total_planned,
+        'notes': notes,
+        'challenge': challenge_result
+    })
+
+
 # WebSocket Events
 @socketio.on('connect')
 def handle_connect():

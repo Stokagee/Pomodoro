@@ -5,13 +5,14 @@ Pomodoro ML Service - Flask API for productivity analysis
 import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-from pymongo import MongoClient
-from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
 
 from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor, BurnoutPredictor, FocusOptimizer, SessionQualityPredictor, PatternAnomalyDetector
 from models.ai_challenge_generator import AIChallengeGenerator
 from models.ai_analyzer import AIAnalyzer, CacheManager
+
+# Import PostgreSQL database module
+import db as database
 
 # Load environment variables
 load_dotenv()
@@ -19,10 +20,8 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# MongoDB connection
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/pomodoro')
-client = None
-db = None
+# Database connection status
+db_connected = False
 
 # AI Challenge Generator (singleton)
 ai_generator = AIChallengeGenerator()
@@ -32,45 +31,37 @@ ai_analyzer = None
 
 
 def init_db():
-    """Initialize MongoDB connection and AI Analyzer"""
-    global client, db, ai_analyzer
+    """Initialize PostgreSQL connection and AI Analyzer"""
+    global db_connected, ai_analyzer
     try:
-        client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-        client.admin.command('ping')
-        db = client.get_database()
-        print(f"ML Service connected to MongoDB: {MONGO_URI}")
+        db_connected = database.init_db()
+        if db_connected:
+            print("ML Service connected to PostgreSQL")
 
-        # Initialize AI Analyzer with database
-        ai_analyzer = AIAnalyzer(db)
-        print("AI Analyzer initialized")
+            # Initialize AI Analyzer
+            ai_analyzer = AIAnalyzer()
+            print("AI Analyzer initialized")
 
-        # Clear AI cache on startup (docker-compose up)
-        try:
-            deleted = ai_analyzer.cache.clear_all()
-            print(f"AI cache cleared on startup ({deleted} entries)")
-        except Exception as e:
-            print(f"Warning: Could not clear AI cache: {e}")
+            # Clear AI cache on startup (docker-compose up)
+            try:
+                deleted = database.clear_all_cache()
+                print(f"AI cache cleared on startup ({deleted} entries)")
+            except Exception as e:
+                print(f"Warning: Could not clear AI cache: {e}")
 
-        return True
-    except ConnectionFailure as e:
-        print(f"MongoDB connection failed: {e}")
+            return True
+        return False
+    except Exception as e:
+        print(f"PostgreSQL connection failed: {e}")
         return False
 
 
 def get_sessions():
     """Get all completed sessions from database"""
-    if db is None:
+    if not db_connected:
         return []
 
-    try:
-        sessions = list(db.sessions.find({'completed': True}))
-        # Convert ObjectId to string
-        for s in sessions:
-            s['_id'] = str(s['_id'])
-        return sessions
-    except Exception as e:
-        print(f"Error fetching sessions: {e}")
-        return []
+    return database.get_sessions(completed_only=True)
 
 
 @app.route('/api/health')
@@ -79,8 +70,34 @@ def health():
     return jsonify({
         'status': 'healthy',
         'service': 'pomodoro-ml',
-        'mongodb': 'connected' if db is not None else 'disconnected'
+        'database': 'connected' if db_connected else 'disconnected'
     })
+
+
+@app.route('/api/config/categories', methods=['POST'])
+def set_categories():
+    """Receive categories from web service for AI prompts.
+
+    This endpoint allows the web service to pass user's configured
+    categories so AI prompts use the correct category list.
+    """
+    global ai_analyzer
+
+    data = request.get_json() or {}
+    categories = data.get('categories', [])
+
+    if ai_analyzer is not None:
+        ai_analyzer.update_categories(categories)
+        return jsonify({
+            'status': 'ok',
+            'categories_count': len(categories),
+            'categories': categories
+        })
+    else:
+        return jsonify({
+            'status': 'error',
+            'message': 'AI Analyzer not initialized'
+        }), 503
 
 
 @app.route('/api/analysis')
@@ -770,12 +787,9 @@ def ai_achievement_focus():
         dict: Suggested achievement with reason
     """
     # Try to get achievements from database
-    if db is not None:
+    if db_connected:
         try:
-            achievements = list(db.achievements.find())
-            for a in achievements:
-                a['_id'] = str(a['_id'])
-                a['id'] = a.get('achievement_id', str(a['_id']))
+            achievements = database.get_achievements()
         except Exception as e:
             print(f"Error fetching achievements: {e}")
             achievements = []
@@ -882,13 +896,14 @@ def ai_extract_topics():
         tasks = data.get('tasks', [])
 
         # If no tasks provided, try to get from database
-        if not tasks and db is not None:
+        if not tasks and db_connected:
             try:
-                sessions = list(db.sessions.find(
-                    {'task': {'$exists': True, '$ne': ''}},
-                    {'task': 1, 'category': 1, '_id': 0}
-                ).sort('created_at', -1).limit(100))
-                tasks = sessions
+                sessions = database.get_sessions_with_notes(30)
+                tasks = [
+                    {'task': s.get('task', ''), 'category': s.get('category', '')}
+                    for s in sessions[:100]
+                    if s.get('task')
+                ]
             except Exception as e:
                 print(f"Error fetching tasks: {e}")
                 tasks = []
@@ -944,7 +959,7 @@ def ai_analyze_patterns():
 
 def _gather_user_analytics() -> dict:
     """Helper to gather user analytics from database for AI"""
-    if db is None:
+    if not db_connected:
         return {}
 
     from datetime import datetime, timedelta
@@ -952,14 +967,7 @@ def _gather_user_analytics() -> dict:
 
     try:
         # Get recent sessions (last 30 days)
-        thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()[:10]
-        recent_sessions = list(db.sessions.find({
-            'completed': True,
-            'date': {'$gte': thirty_days_ago}
-        }).sort('created_at', -1))
-
-        for s in recent_sessions:
-            s['_id'] = str(s['_id'])
+        recent_sessions = database.get_sessions_with_notes(30)
 
         # Calculate category distribution
         cat_stats = defaultdict(lambda: {'sessions': 0, 'minutes': 0})
@@ -979,7 +987,7 @@ def _gather_user_analytics() -> dict:
             }
 
         # Get skill levels
-        skill_levels = list(db.category_skills.find({}, {'_id': 0})) if 'category_skills' in db.list_collection_names() else []
+        skill_levels = database.get_skill_levels()
 
         # Get recent tasks
         recent_tasks = [
@@ -989,7 +997,7 @@ def _gather_user_analytics() -> dict:
         ]
 
         # Get user profile
-        user_profile = db.user_profile.find_one({'user_id': 'default'}, {'_id': 0}) or {}
+        user_profile = database.get_user_profile()
 
         return {
             'recent_sessions': recent_sessions[:100],
@@ -1008,7 +1016,7 @@ def _gather_user_analytics() -> dict:
 
 def _gather_productivity_data() -> dict:
     """Helper to gather productivity data for pattern analysis"""
-    if db is None:
+    if not db_connected:
         return {}
 
     from datetime import datetime, timedelta
@@ -1016,11 +1024,7 @@ def _gather_productivity_data() -> dict:
 
     try:
         # Get sessions from last 14 days
-        fourteen_days_ago = (datetime.now() - timedelta(days=14)).isoformat()[:10]
-        sessions = list(db.sessions.find({
-            'completed': True,
-            'date': {'$gte': fourteen_days_ago}
-        }))
+        sessions = database.get_sessions_with_notes(14)
 
         # Calculate hourly stats
         hourly_stats = defaultdict(lambda: {'sessions': 0, 'ratings': []})
@@ -1045,6 +1049,90 @@ def _gather_productivity_data() -> dict:
     except Exception as e:
         print(f"Error gathering productivity data: {e}")
         return {}
+
+
+# =============================================================================
+# SEMANTIC SEARCH ENDPOINT (pgvector)
+# =============================================================================
+
+@app.route('/api/semantic-search')
+def semantic_search():
+    """
+    Search session notes semantically using pgvector.
+
+    Query params:
+        query: Search query text (required)
+        limit: Maximum results (default: 10)
+        min_similarity: Minimum similarity threshold 0-1 (default: 0.4)
+        days: Days back to search (default: 30)
+
+    Returns:
+        dict: Search results with similar sessions
+    """
+    query = request.args.get('query', '')
+    if not query:
+        return jsonify({'error': 'Query parameter required'}), 400
+
+    limit = request.args.get('limit', 10, type=int)
+    min_similarity = request.args.get('min_similarity', 0.4, type=float)
+    days = request.args.get('days', 30, type=int)
+
+    try:
+        from services.embedding_service import embedding_service
+
+        # Generate embedding for query
+        query_embedding = embedding_service.embed(query)
+        if not query_embedding:
+            return jsonify({
+                'error': 'Could not generate embedding',
+                'results': []
+            }), 500
+
+        # Search
+        results = database.semantic_search_sessions(
+            query_embedding,
+            limit=limit,
+            min_similarity=min_similarity,
+            days_back=days
+        )
+
+        return jsonify({
+            'query': query,
+            'results': results,
+            'count': len(results),
+            'model': embedding_service.model_name,
+            'dimensions': embedding_service.dimensions
+        })
+
+    except ImportError:
+        return jsonify({
+            'error': 'Embedding service not available',
+            'results': []
+        }), 503
+    except Exception as e:
+        print(f"Semantic search error: {e}")
+        return jsonify({
+            'error': str(e),
+            'results': []
+        }), 500
+
+
+@app.route('/api/embedding/health')
+def embedding_health():
+    """Check embedding service health."""
+    try:
+        from services.embedding_service import embedding_service
+        return jsonify(embedding_service.health_check())
+    except ImportError:
+        return jsonify({
+            'status': 'not_available',
+            'error': 'Embedding service not installed'
+        }), 503
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'error': str(e)
+        }), 500
 
 
 # =============================================================================
@@ -1244,9 +1332,9 @@ if __name__ == '__main__':
     print("=" * 50)
 
     if init_db():
-        print("  MongoDB: Connected")
+        print("  PostgreSQL: Connected")
     else:
-        print("  MongoDB: Connection failed")
+        print("  PostgreSQL: Connection failed")
 
     print(f"\n  API available at: http://localhost:5001/api")
     print("\n  Endpoints:")

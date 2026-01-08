@@ -2992,3 +2992,449 @@ body {
         gap: 0.5rem;
     }
 }
+
+
+/* =============================================================================
+   START DAY WORKFLOW
+   ============================================================================= */
+
+/* Start Day Button */
+.start-day-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    width: 100%;
+    padding: 1rem 1.5rem;
+    margin-bottom: 1.5rem;
+    background: linear-gradient(135deg, #f59e0b 0%, #f97316 100%);
+    border: none;
+    border-radius: var(--radius-lg);
+    color: white;
+    font-size: 1.125rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(249, 115, 22, 0.3);
+}
+
+.start-day-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(249, 115, 22, 0.4);
+}
+
+.start-day-btn:active {
+    transform: translateY(0);
+}
+
+.start-day-icon {
+    font-size: 1.5rem;
+}
+
+.start-day-text {
+    font-weight: 700;
+}
+
+.start-day-hint {
+    font-size: 0.75rem;
+    opacity: 0.8;
+    font-weight: 400;
+}
+
+/* Start Day Modal */
+.start-day-modal {
+    max-width: 500px;
+    width: 95%;
+    max-height: 85vh;
+    overflow-y: auto;
+}
+
+/* Step Indicator */
+.start-day-steps {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1.5rem;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.start-day-steps .step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.start-day-steps .step-number {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 2px solid var(--border-color);
+    border-radius: 50%;
+    font-weight: 600;
+    font-size: 0.875rem;
+    transition: all 0.3s ease;
+}
+
+.start-day-steps .step.active .step-number {
+    background: var(--accent-orange);
+    border-color: var(--accent-orange);
+    color: white;
+}
+
+.start-day-steps .step.completed .step-number {
+    background: var(--accent-green);
+    border-color: var(--accent-green);
+    color: white;
+}
+
+.start-day-steps .step-label {
+    font-size: 0.625rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.start-day-steps .step.active .step-label {
+    color: var(--accent-orange);
+}
+
+.start-day-steps .step-line {
+    width: 40px;
+    height: 2px;
+    background: var(--border-color);
+    margin: 0 0.25rem;
+    margin-bottom: 1rem;
+}
+
+/* Start Day Step Content */
+.start-day-step {
+    padding: 0;
+}
+
+.start-day-step .modal-header {
+    padding: 1.5rem;
+    text-align: center;
+}
+
+.start-day-step .modal-header h2 {
+    font-size: 1.5rem;
+    margin-bottom: 0.25rem;
+}
+
+.start-day-step .modal-header p {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.start-day-step .modal-body {
+    padding: 1.5rem;
+    background: var(--bg-tertiary);
+}
+
+.start-day-step .modal-footer {
+    padding: 1rem 1.5rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    border-top: 1px solid var(--border-color);
+}
+
+/* Briefing Sections */
+.briefing-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem;
+    color: var(--text-muted);
+}
+
+.loading-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid var(--border-color);
+    border-top-color: var(--accent-orange);
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.briefing-content {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.briefing-section {
+    background: var(--bg-secondary);
+    padding: 1rem;
+    border-radius: var(--radius);
+    border-left: 3px solid var(--accent-purple);
+}
+
+.briefing-section h4 {
+    font-size: 0.875rem;
+    margin-bottom: 0.5rem;
+    color: var(--text-secondary);
+}
+
+.briefing-section p {
+    font-size: 0.9rem;
+    line-height: 1.5;
+}
+
+.briefing-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 1.5rem;
+    color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.1);
+    border-radius: var(--radius);
+}
+
+/* Category Planner */
+.category-planner {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.category-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+}
+
+.category-name {
+    font-weight: 500;
+}
+
+.category-counter {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.counter-btn {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-color);
+    border-radius: 6px;
+    color: var(--text-primary);
+    font-size: 1rem;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.counter-btn:hover {
+    background: var(--accent-purple);
+    border-color: var(--accent-purple);
+}
+
+.counter-btn.minus:hover {
+    background: var(--accent-red);
+    border-color: var(--accent-red);
+}
+
+.counter-value {
+    min-width: 24px;
+    text-align: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+}
+
+.planning-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 1rem;
+    margin-top: 1rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    border: 1px solid var(--accent-purple);
+}
+
+.summary-label {
+    color: var(--text-secondary);
+}
+
+.summary-value {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    color: var(--accent-purple);
+}
+
+.planning-notes {
+    margin-top: 1rem;
+}
+
+.planning-notes textarea {
+    width: 100%;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-family: inherit;
+    resize: vertical;
+}
+
+.planning-notes textarea:focus {
+    outline: none;
+    border-color: var(--accent-purple);
+}
+
+/* Challenge Card */
+.challenge-card {
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    border: 1px solid var(--border-color);
+}
+
+.challenge-card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.challenge-card-icon {
+    font-size: 1.5rem;
+}
+
+.challenge-card-title {
+    font-weight: 600;
+    font-size: 1.1rem;
+}
+
+.challenge-card-desc {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+}
+
+.challenge-card-reward {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.reward-label {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+}
+
+.reward-xp {
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 700;
+    color: var(--accent-orange);
+}
+
+.challenge-accept-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-tertiary);
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.challenge-accept-checkbox:hover {
+    background: rgba(139, 92, 246, 0.1);
+}
+
+.challenge-accept-checkbox input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-purple);
+}
+
+/* Start Day Summary */
+.start-day-summary {
+    display: flex;
+    gap: 1rem;
+    margin-top: 1rem;
+}
+
+.start-day-summary .summary-item {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    background: var(--bg-secondary);
+    border-radius: var(--radius);
+}
+
+.start-day-summary .summary-icon {
+    font-size: 1.25rem;
+}
+
+.start-day-summary .summary-text {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.start-day-summary .summary-text strong {
+    color: var(--text-primary);
+}
+
+/* Success Button */
+.modal-btn.success {
+    background: linear-gradient(135deg, var(--accent-green) 0%, #16a34a 100%);
+}
+
+.modal-btn.success:hover {
+    box-shadow: 0 4px 15px rgba(34, 197, 94, 0.4);
+}
+
+/* Responsive Start Day */
+@media (max-width: 480px) {
+    .start-day-btn {
+        padding: 0.875rem 1rem;
+        font-size: 1rem;
+    }
+
+    .start-day-hint {
+        display: none;
+    }
+
+    .start-day-steps {
+        padding: 1rem;
+    }
+
+    .start-day-steps .step-line {
+        width: 20px;
+    }
+
+    .category-planner {
+        max-height: 200px;
+    }
+
+    .start-day-summary {
+        flex-direction: column;
+    }
+}

@@ -25,7 +25,7 @@ APPLICATION CONTEXT:
   * short_focus: 15 minutes work + 3 minutes break (quick tasks)
   * long_session: 90 minutes work + 20 minutes break (deep immersion)
 
-- Categories: Coding, Learning, Writing, Design, Planning
+- Categories: {categories}
 
 - Gamification system:
   * XP points earned per session
@@ -757,3 +757,16 @@ def get_prompt_with_context(prompt_template: str, **context) -> str:
     except KeyError as e:
         # Return template with missing keys noted
         return prompt_template + f"\n\n[WARNING: Missing context key: {e}]"
+
+
+def get_master_prompt_with_categories(categories: list) -> str:
+    """Generate master system prompt with dynamic categories.
+
+    Args:
+        categories: List of user's configured categories
+
+    Returns:
+        MASTER_SYSTEM_PROMPT with categories placeholder filled
+    """
+    categories_str = ", ".join(categories) if categories else "General"
+    return MASTER_SYSTEM_PROMPT.replace("{categories}", categories_str)

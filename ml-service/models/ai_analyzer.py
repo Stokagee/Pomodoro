@@ -10,11 +10,16 @@ import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 
+# Import PostgreSQL database module
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import db as database
+
 logger = logging.getLogger(__name__)
 
 
 class CacheManager:
-    """Manages AI response caching in MongoDB."""
+    """Manages AI response caching in PostgreSQL."""
 
     # Cache durations in hours
     CACHE_DURATIONS = {
@@ -29,18 +34,9 @@ class CacheManager:
         'learning': 24
     }
 
-    def __init__(self, db):
-        """Initialize cache manager with MongoDB database."""
-        self.collection = db.ai_cache
-        self._ensure_indexes()
-
-    def _ensure_indexes(self):
-        """Create indexes for efficient cache queries."""
-        try:
-            self.collection.create_index([('cache_type', 1), ('cache_key', 1)])
-            self.collection.create_index('expires_at')
-        except Exception as e:
-            logger.warning(f"Could not create cache indexes: {e}")
+    def __init__(self):
+        """Initialize cache manager with PostgreSQL database."""
+        pass  # PostgreSQL connection is handled by db module
 
     def _generate_key(self, params: dict) -> str:
         """Generate cache key from parameters."""
@@ -50,22 +46,11 @@ class CacheManager:
     def get_cached(self, cache_type: str, params: dict = None) -> Optional[Dict]:
         """Get cached response if valid."""
         try:
-            query = {
-                'cache_type': cache_type,
-                'invalidated': False,
-                'expires_at': {'$gt': datetime.now()}
-            }
-            if params:
-                query['cache_key'] = self._generate_key(params)
-
-            result = self.collection.find_one(query)
+            cache_key = self._generate_key(params) if params else None
+            result = database.get_cached(cache_type, cache_key)
             if result:
                 logger.info(f"Cache hit for {cache_type}")
-                data = result.get('data', {})
-                data['from_cache'] = True
-                data['cached_at'] = result.get('generated_at')
-                return data
-
+                return result
             return None
         except Exception as e:
             logger.error(f"Cache get error: {e}")
@@ -76,21 +61,7 @@ class CacheManager:
         try:
             ttl_hours = self.CACHE_DURATIONS.get(cache_type, 1)
             cache_key = self._generate_key(params) if params else None
-
-            doc = {
-                'cache_type': cache_type,
-                'cache_key': cache_key,
-                'data': data,
-                'generated_at': datetime.now(),
-                'expires_at': datetime.now() + timedelta(hours=ttl_hours),
-                'invalidated': False
-            }
-
-            self.collection.update_one(
-                {'cache_type': cache_type, 'cache_key': cache_key},
-                {'$set': doc},
-                upsert=True
-            )
+            database.set_cache(cache_type, data, cache_key, ttl_hours)
             logger.info(f"Cached {cache_type} for {ttl_hours} hours")
         except Exception as e:
             logger.error(f"Cache set error: {e}")
@@ -98,12 +69,9 @@ class CacheManager:
     def invalidate_all(self):
         """Invalidate all caches (called on new session)."""
         try:
-            result = self.collection.update_many(
-                {},
-                {'$set': {'invalidated': True}}
-            )
-            logger.info(f"Invalidated {result.modified_count} cache entries")
-            return result.modified_count
+            count = database.invalidate_all_cache()
+            logger.info(f"Invalidated {count} cache entries")
+            return count
         except Exception as e:
             logger.error(f"Cache invalidation error: {e}")
             return 0
@@ -111,9 +79,9 @@ class CacheManager:
     def clear_all(self):
         """Clear entire cache (called on docker-compose up)."""
         try:
-            result = self.collection.delete_many({})
-            logger.info(f"Cleared {result.deleted_count} cache entries")
-            return result.deleted_count
+            count = database.clear_all_cache()
+            logger.info(f"Cleared {count} cache entries")
+            return count
         except Exception as e:
             logger.error(f"Cache clear error: {e}")
             return 0
@@ -121,25 +89,7 @@ class CacheManager:
     def get_status(self) -> Dict:
         """Get current cache status."""
         try:
-            caches = list(self.collection.find({}, {'data': 0}))
-            now = datetime.now()
-            valid_count = len([
-                c for c in caches
-                if not c.get('invalidated') and c.get('expires_at', datetime.min) > now
-            ])
-            return {
-                'total_cached': len(caches),
-                'valid': valid_count,
-                'invalidated': len(caches) - valid_count,
-                'caches': [{
-                    'type': c['cache_type'],
-                    'key': c.get('cache_key'),
-                    'generated_at': c.get('generated_at').isoformat() if c.get('generated_at') else None,
-                    'expires_at': c.get('expires_at').isoformat() if c.get('expires_at') else None,
-                    'invalidated': c.get('invalidated', False),
-                    'valid': not c.get('invalidated') and c.get('expires_at', datetime.min) > now
-                } for c in caches]
-            }
+            return database.get_cache_status()
         except Exception as e:
             logger.error(f"Cache status error: {e}")
             return {'error': str(e)}
@@ -148,15 +98,19 @@ class CacheManager:
 class AIAnalyzer:
     """Full LLM-based analyzer using Ollama."""
 
-    def __init__(self, db):
-        """Initialize AI Analyzer."""
-        self.db = db
+    def __init__(self, categories: List[str] = None):
+        """Initialize AI Analyzer.
+
+        Args:
+            categories: User's configured categories (from config.json)
+        """
+        self.categories = categories or []
         self.ollama_url = os.getenv('OLLAMA_URL', 'http://ollama:11434')
         self.model = os.getenv('OLLAMA_MODEL', 'mistral:7b')
         self.enabled = os.getenv('OLLAMA_ENABLED', 'true').lower() == 'true'
         self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '60'))
 
-        self.cache = CacheManager(db)
+        self.cache = CacheManager()
 
         # Import prompts
         from prompts import (
@@ -171,7 +125,8 @@ class AIAnalyzer:
             INTEGRATED_INSIGHT_PROMPT,
             LEARNING_RECOMMENDATION_PROMPT,
             format_session_data,
-            format_category_distribution
+            format_category_distribution,
+            get_master_prompt_with_categories
         )
 
         self.prompts = {
@@ -188,19 +143,27 @@ class AIAnalyzer:
         }
         self.format_session_data = format_session_data
         self.format_category_distribution = format_category_distribution
+        self._get_master_prompt_with_categories = get_master_prompt_with_categories
 
-        logger.info(f"AIAnalyzer initialized: enabled={self.enabled}, model={self.model}")
+        logger.info(f"AIAnalyzer initialized: enabled={self.enabled}, model={self.model}, categories={len(self.categories)}")
+
+    def update_categories(self, categories: List[str]):
+        """Update categories at runtime (called when web service sends new categories)."""
+        self.categories = categories or []
+        logger.info(f"Categories updated: {len(self.categories)} categories")
+
+    def _get_system_prompt(self) -> str:
+        """Get system prompt with dynamic categories filled in."""
+        if self.categories:
+            return self._get_master_prompt_with_categories(self.categories)
+        return self.prompts['master']
 
     def _get_sessions_with_notes(self, days: int = 30) -> List[Dict]:
         """Get all sessions with notes from specified period."""
         try:
-            cutoff = datetime.now() - timedelta(days=days)
-            sessions = list(self.db.sessions.find({
-                'completed': True,
-                'timestamp': {'$gte': cutoff}
-            }).sort('timestamp', -1))
+            sessions = database.get_sessions_with_notes(days)
 
-            # Convert ObjectId and format
+            # Format for prompts
             formatted = []
             for s in sessions:
                 formatted.append({
@@ -223,12 +186,8 @@ class AIAnalyzer:
 
     def _get_today_sessions(self) -> List[Dict]:
         """Get today's sessions with notes."""
-        today = datetime.now().strftime('%Y-%m-%d')
         try:
-            sessions = list(self.db.sessions.find({
-                'date': today,
-                'completed': True
-            }).sort('timestamp', 1))
+            sessions = database.get_today_sessions()
 
             return [{
                 'time': s.get('time', ''),
@@ -373,11 +332,11 @@ class AIAnalyzer:
     def _get_skill_levels(self) -> List[Dict]:
         """Get skill levels from database."""
         try:
-            skills = list(self.db.skills.find({}))
+            skills = database.get_skill_levels()
             return [{
                 'category': s.get('category', 'Unknown'),
                 'level': s.get('level', 1),
-                'xp': s.get('current_xp', 0)
+                'xp': s.get('xp', 0)
             } for s in skills]
         except Exception as e:
             logger.error(f"Error getting skills: {e}")
@@ -386,17 +345,63 @@ class AIAnalyzer:
     def _get_user_profile(self) -> Dict:
         """Get user profile from database."""
         try:
-            profile = self.db.user_profile.find_one({})
-            if profile:
-                return {
-                    'level': profile.get('level', 1),
-                    'total_xp': profile.get('total_xp_earned', 0),
-                    'streak': profile.get('streak', 0)
-                }
-            return {'level': 1, 'total_xp': 0, 'streak': 0}
+            profile = database.get_user_profile()
+            return {
+                'level': profile.get('level', 1),
+                'total_xp': profile.get('total_xp', 0),
+                'streak': profile.get('streak', 0)
+            }
         except Exception as e:
             logger.error(f"Error getting profile: {e}")
             return {'level': 1, 'total_xp': 0, 'streak': 0}
+
+    def _get_rag_context(self, query: str, limit: int = 5) -> str:
+        """Get RAG context by finding semantically similar session notes.
+
+        Uses embedding service to generate query embedding and searches
+        pgvector for similar session notes.
+
+        Args:
+            query: The query text to find similar sessions for
+            limit: Maximum number of similar sessions to retrieve
+
+        Returns:
+            Formatted context string with relevant session notes
+        """
+        try:
+            from services.embedding_service import embedding_service
+
+            # Generate embedding for query
+            query_embedding = embedding_service.embed(query)
+            if not query_embedding:
+                logger.warning("Could not generate embedding for RAG query")
+                return ""
+
+            # Search for similar sessions
+            similar = database.semantic_search_sessions(
+                query_embedding,
+                limit=limit,
+                min_similarity=0.4,
+                days_back=30
+            )
+
+            if not similar:
+                return ""
+
+            # Format context
+            context = "\n📚 Semantic search results (related past sessions):\n"
+            for s in similar:
+                rating_str = f" (productivity: {s['productivity_rating']}%)" if s.get('productivity_rating') else ""
+                context += f"- [{s['date']}] {s['category']}: {s['notes'][:200]}{rating_str}\n"
+
+            return context
+
+        except ImportError:
+            logger.warning("Embedding service not available for RAG")
+            return ""
+        except Exception as e:
+            logger.error(f"Error getting RAG context: {e}")
+            return ""
 
     def _create_fallback(self, endpoint: str, error: str = None) -> Dict:
         """Create fallback response when AI is unavailable."""
@@ -414,7 +419,7 @@ class AIAnalyzer:
     # =========================================================================
 
     def morning_briefing(self) -> Dict:
-        """Generate comprehensive morning briefing."""
+        """Generate comprehensive morning briefing with RAG context."""
         # Check cache
         cached = self.cache.get_cached('morning_briefing')
         if cached:
@@ -437,8 +442,14 @@ class AIAnalyzer:
         yesterday_ratings = [s.get('productivity_rating') for s in yesterday_sessions if s.get('productivity_rating')]
         yesterday_rating = sum(yesterday_ratings) / len(yesterday_ratings) if yesterday_ratings else 0
 
+        # Get RAG context for productivity patterns
+        rag_context = self._get_rag_context(
+            f"morning productivity patterns {today.strftime('%A')} focus work",
+            limit=5
+        )
+
         context = {
-            'session_data': self.format_session_data(sessions[:50]),  # Limit for context
+            'session_data': self.format_session_data(sessions[:15]),  # Limit for faster response
             'day_of_week': today.strftime('%A'),
             'date': today.strftime('%Y-%m-%d'),
             'current_time': today.strftime('%H:%M'),
@@ -448,8 +459,12 @@ class AIAnalyzer:
             'yesterday_notes': yesterday_notes
         }
 
+        # Build prompt with RAG context
         prompt = self.prompts['morning'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        if rag_context:
+            prompt = f"{rag_context}\n\n{prompt}"
+
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -491,7 +506,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['evening'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -503,7 +518,7 @@ class AIAnalyzer:
         return self._create_fallback('evening_review')
 
     def analyze_burnout(self) -> Dict:
-        """Full LLM burnout risk analysis."""
+        """Full LLM burnout risk analysis with RAG context."""
         cached = self.cache.get_cached('analyze_burnout')
         if cached:
             return cached
@@ -525,6 +540,12 @@ class AIAnalyzer:
         weekly_ratings = [s.get('productivity_rating') for s in weekly_sessions if s.get('productivity_rating')]
         weekly_rating = sum(weekly_ratings) / len(weekly_ratings) if weekly_ratings else 0
 
+        # Get RAG context for burnout-related patterns
+        rag_context = self._get_rag_context(
+            "tired exhausted stress burnout overwork fatigue low energy",
+            limit=5
+        )
+
         context = {
             'session_data': self.format_session_data(sessions),
             'streak': profile.get('streak', 0),
@@ -534,7 +555,10 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['burnout'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        if rag_context:
+            prompt = f"{rag_context}\n\n{prompt}"
+
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -567,7 +591,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['anomaly'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -613,7 +637,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['quality'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -644,7 +668,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['schedule'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -687,7 +711,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['integrated'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -732,7 +756,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['learning'].format(**context)
-        response = self._call_ollama(prompt, self.prompts['master'])
+        response = self._call_ollama(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:

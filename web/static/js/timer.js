@@ -873,8 +873,7 @@ class PomodoroTimer {
     }
 
     playSound(type) {
-        if (!this.config.sound_enabled) return;
-
+        // Sound is ALWAYS enabled - hardcoded, cannot be disabled
         try {
             let audio;
             if (type === 'work') {
@@ -1430,6 +1429,313 @@ function showToast(message, type = 'info') {
         toast.classList.remove('show');
         setTimeout(() => toast.remove(), 300);
     }, 3000);
+}
+
+// =============================================================================
+// START DAY WORKFLOW FUNCTIONS
+// =============================================================================
+
+let startDayData = null;
+let startDayCurrentStep = 1;
+let categoryPlannerData = {};
+
+/**
+ * Open the Start Day modal and load data
+ */
+async function openStartDayModal() {
+    const modal = document.getElementById('start-day-modal');
+    if (!modal) return;
+
+    // Reset state
+    startDayCurrentStep = 1;
+    categoryPlannerData = {};
+
+    // Show modal
+    modal.style.display = 'flex';
+
+    // Reset to step 1
+    goToStartDayStep(1);
+
+    // Load data
+    await loadStartDayData();
+}
+
+/**
+ * Close the Start Day modal
+ */
+function closeStartDayModal() {
+    const modal = document.getElementById('start-day-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+/**
+ * Navigate to a specific step
+ */
+function goToStartDayStep(stepNumber) {
+    startDayCurrentStep = stepNumber;
+
+    // Hide all steps
+    document.querySelectorAll('.start-day-step').forEach(step => {
+        step.classList.add('hidden');
+    });
+
+    // Show current step
+    const currentStep = document.getElementById(`start-day-step-${stepNumber}`);
+    if (currentStep) {
+        currentStep.classList.remove('hidden');
+    }
+
+    // Update step indicators
+    document.querySelectorAll('.start-day-steps .step').forEach(stepEl => {
+        const num = parseInt(stepEl.dataset.step);
+        stepEl.classList.toggle('active', num === stepNumber);
+        stepEl.classList.toggle('completed', num < stepNumber);
+    });
+}
+
+/**
+ * Load all Start Day data from API
+ */
+async function loadStartDayData() {
+    const loadingEl = document.getElementById('briefing-loading');
+    const contentEl = document.getElementById('briefing-content');
+    const errorEl = document.getElementById('briefing-error');
+
+    // Show loading
+    if (loadingEl) loadingEl.classList.remove('hidden');
+    if (contentEl) contentEl.classList.add('hidden');
+    if (errorEl) errorEl.classList.add('hidden');
+
+    try {
+        const response = await fetch('/api/start-day');
+        const data = await response.json();
+
+        if (data.success) {
+            startDayData = data;
+
+            // Render morning briefing
+            renderMorningBriefing(data.morning_briefing);
+
+            // Render category planner
+            renderCategoryPlanner(data.categories);
+
+            // Render challenge
+            renderDailyChallenge(data.daily_challenge);
+
+            // Update summary info
+            updateStartDaySummary(data);
+
+            // Hide loading, show content
+            if (loadingEl) loadingEl.classList.add('hidden');
+            if (contentEl) contentEl.classList.remove('hidden');
+        } else {
+            showStartDayError();
+        }
+    } catch (err) {
+        console.error('Failed to load Start Day data:', err);
+        showStartDayError();
+    }
+}
+
+/**
+ * Show error state
+ */
+function showStartDayError() {
+    const loadingEl = document.getElementById('briefing-loading');
+    const contentEl = document.getElementById('briefing-content');
+    const errorEl = document.getElementById('briefing-error');
+
+    if (loadingEl) loadingEl.classList.add('hidden');
+    if (contentEl) contentEl.classList.add('hidden');
+    if (errorEl) errorEl.classList.remove('hidden');
+}
+
+/**
+ * Render the morning briefing from AI
+ */
+function renderMorningBriefing(briefing) {
+    const yesterdayEl = document.getElementById('briefing-yesterday');
+    const predictionEl = document.getElementById('briefing-prediction');
+    const recommendationEl = document.getElementById('briefing-recommendation');
+    const wellbeingEl = document.getElementById('briefing-wellbeing');
+
+    if (!briefing) {
+        // Fallback when AI is unavailable
+        if (yesterdayEl) yesterdayEl.textContent = 'AI analýza není dostupná. Pokračuj na plánování.';
+        if (predictionEl) predictionEl.textContent = '-';
+        if (recommendationEl) recommendationEl.textContent = 'Vyber si kategorie dle vlastního uvážení.';
+        if (wellbeingEl) wellbeingEl.textContent = 'Nezapomeň na pravidelné přestávky!';
+        return;
+    }
+
+    // Parse AI response - handle both structured and text responses
+    if (typeof briefing === 'string') {
+        // Simple text response
+        if (yesterdayEl) yesterdayEl.textContent = briefing;
+        return;
+    }
+
+    // Structured response from AIAnalyzer
+    if (yesterdayEl) {
+        yesterdayEl.textContent = briefing.yesterday_summary || briefing.analysis?.yesterday || '-';
+    }
+    if (predictionEl) {
+        predictionEl.textContent = briefing.today_prediction || briefing.analysis?.prediction || '-';
+    }
+    if (recommendationEl) {
+        recommendationEl.textContent = briefing.recommendation || briefing.analysis?.focus || '-';
+    }
+    if (wellbeingEl) {
+        wellbeingEl.textContent = briefing.wellbeing || briefing.analysis?.wellbeing || 'Držím ti palce!';
+    }
+}
+
+/**
+ * Render the category planner with all user categories
+ */
+function renderCategoryPlanner(categories) {
+    const planner = document.getElementById('category-planner');
+    if (!planner || !categories) return;
+
+    planner.innerHTML = '';
+    categoryPlannerData = {};
+
+    categories.forEach(category => {
+        categoryPlannerData[category] = 0;
+
+        const row = document.createElement('div');
+        row.className = 'category-row';
+        row.innerHTML = `
+            <span class="category-name">${category}</span>
+            <div class="category-counter">
+                <button class="counter-btn minus" onclick="adjustCategorySessions('${category}', -1)">-</button>
+                <span class="counter-value" id="counter-${category.replace(/\s+/g, '-')}">0</span>
+                <button class="counter-btn plus" onclick="adjustCategorySessions('${category}', 1)">+</button>
+            </div>
+        `;
+        planner.appendChild(row);
+    });
+}
+
+/**
+ * Adjust session count for a category
+ */
+function adjustCategorySessions(category, delta) {
+    const current = categoryPlannerData[category] || 0;
+    const newValue = Math.max(0, Math.min(20, current + delta));
+    categoryPlannerData[category] = newValue;
+
+    // Update display
+    const counterId = `counter-${category.replace(/\s+/g, '-')}`;
+    const counterEl = document.getElementById(counterId);
+    if (counterEl) {
+        counterEl.textContent = newValue;
+    }
+
+    // Update total
+    updatePlanningTotal();
+}
+
+/**
+ * Update the total planned sessions display
+ */
+function updatePlanningTotal() {
+    const total = Object.values(categoryPlannerData).reduce((sum, val) => sum + val, 0);
+    const totalEl = document.getElementById('total-planned-sessions');
+    if (totalEl) {
+        totalEl.textContent = `${total} sessions`;
+    }
+}
+
+/**
+ * Render the daily challenge
+ */
+function renderDailyChallenge(challenge) {
+    const titleEl = document.getElementById('challenge-title');
+    const descEl = document.getElementById('challenge-description');
+    const xpEl = document.getElementById('challenge-xp');
+
+    if (!challenge) {
+        if (titleEl) titleEl.textContent = 'Žádná výzva';
+        if (descEl) descEl.textContent = 'Výzva není k dispozici.';
+        if (xpEl) xpEl.textContent = '+0 XP';
+        return;
+    }
+
+    if (titleEl) titleEl.textContent = challenge.title || 'Denní výzva';
+    if (descEl) descEl.textContent = challenge.description || 'Splň dnešní cíl!';
+    if (xpEl) xpEl.textContent = `+${challenge.xp_reward || 50} XP`;
+}
+
+/**
+ * Update summary section with streak and level
+ */
+function updateStartDaySummary(data) {
+    const streakEl = document.getElementById('summary-streak');
+    const levelEl = document.getElementById('summary-level');
+
+    if (streakEl && data.streak_status) {
+        streakEl.textContent = data.streak_status.current_streak || 0;
+    }
+    if (levelEl && data.user_profile) {
+        levelEl.textContent = data.user_profile.level || 1;
+    }
+}
+
+/**
+ * Complete the Start Day workflow - save and close
+ */
+async function completeStartDay() {
+    // Prepare themes data
+    const themes = [];
+    for (const [category, sessions] of Object.entries(categoryPlannerData)) {
+        if (sessions > 0) {
+            themes.push({
+                theme: category,
+                planned_sessions: sessions,
+                notes: ''
+            });
+        }
+    }
+
+    // Get notes
+    const notesEl = document.getElementById('day-notes');
+    const notes = notesEl ? notesEl.value : '';
+
+    // Get challenge acceptance
+    const acceptChallengeEl = document.getElementById('accept-challenge');
+    const challengeAccepted = acceptChallengeEl ? acceptChallengeEl.checked : false;
+
+    try {
+        const response = await fetch('/api/start-day', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                themes: themes,
+                notes: notes,
+                challenge_accepted: challengeAccepted
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            closeStartDayModal();
+            showToast('Den naplánován!', 'success');
+
+            // Refresh the page to update widgets
+            setTimeout(() => {
+                window.location.reload();
+            }, 500);
+        } else {
+            showToast('Chyba při ukládání plánu.', 'error');
+        }
+    } catch (err) {
+        console.error('Failed to save Start Day:', err);
+        showToast('Chyba při ukládání plánu.', 'error');
+    }
 }
 
 // Initialize timer when DOM is ready

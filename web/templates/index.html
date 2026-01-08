@@ -4,6 +4,13 @@
 
 {% block content %}
 <div class="timer-container">
+    <!-- Start Day Button -->
+    <button class="start-day-btn" id="start-day-btn" onclick="openStartDayModal()">
+        <span class="start-day-icon">🌅</span>
+        <span class="start-day-text">Start Day</span>
+        <span class="start-day-hint">Naplánuj si den</span>
+    </button>
+
     <!-- ML Recommendation Widget -->
     {% if recommendation %}
     <div class="ml-widget recommendation-widget">
@@ -404,6 +411,139 @@
         </div>
         <div class="modal-footer-note">
             <a href="/insights#burnout">Zobrazit kompletní analýzu &rarr;</a>
+        </div>
+    </div>
+</div>
+
+<!-- Start Day Modal (3-step workflow) -->
+<div class="modal-overlay" id="start-day-modal" style="display: none;">
+    <div class="modal start-day-modal">
+        <!-- Step Indicator -->
+        <div class="start-day-steps">
+            <div class="step active" data-step="1">
+                <span class="step-number">1</span>
+                <span class="step-label">Briefing</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="2">
+                <span class="step-number">2</span>
+                <span class="step-label">Plánování</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="3">
+                <span class="step-number">3</span>
+                <span class="step-label">Výzva</span>
+            </div>
+        </div>
+
+        <!-- Step 1: Morning Briefing -->
+        <div class="start-day-step" id="start-day-step-1">
+            <div class="modal-header">
+                <h2>🌅 Dobré ráno!</h2>
+                <p>Tvůj denní briefing od FocusAI</p>
+            </div>
+            <div class="modal-body">
+                <div class="briefing-loading" id="briefing-loading">
+                    <span class="loading-spinner"></span>
+                    <span>Analyzuji tvá data...</span>
+                </div>
+                <div class="briefing-content hidden" id="briefing-content">
+                    <!-- Yesterday Summary -->
+                    <div class="briefing-section">
+                        <h4>📊 Včerejší shrnutí</h4>
+                        <p id="briefing-yesterday">-</p>
+                    </div>
+                    <!-- Today Prediction -->
+                    <div class="briefing-section">
+                        <h4>🔮 Predikce na dnes</h4>
+                        <p id="briefing-prediction">-</p>
+                    </div>
+                    <!-- Focus Recommendation -->
+                    <div class="briefing-section">
+                        <h4>🎯 Doporučení</h4>
+                        <p id="briefing-recommendation">-</p>
+                    </div>
+                    <!-- Wellbeing -->
+                    <div class="briefing-section">
+                        <h4>💚 Wellbeing</h4>
+                        <p id="briefing-wellbeing">-</p>
+                    </div>
+                </div>
+                <div class="briefing-error hidden" id="briefing-error">
+                    <span class="error-icon">⚠️</span>
+                    <span>AI briefing dočasně nedostupný</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn secondary" onclick="closeStartDayModal()">Zrušit</button>
+                <button class="modal-btn primary" onclick="goToStartDayStep(2)">Další →</button>
+            </div>
+        </div>
+
+        <!-- Step 2: Session Planning -->
+        <div class="start-day-step hidden" id="start-day-step-2">
+            <div class="modal-header">
+                <h2>📋 Naplánuj si sessions</h2>
+                <p>Vyber kategorie a počet sessions na dnes</p>
+            </div>
+            <div class="modal-body">
+                <div class="category-planner" id="category-planner">
+                    <!-- Dynamically populated with categories -->
+                </div>
+                <div class="planning-summary">
+                    <span class="summary-label">Celkem naplánováno:</span>
+                    <span class="summary-value" id="total-planned-sessions">0 sessions</span>
+                </div>
+                <div class="planning-notes">
+                    <textarea id="day-notes" placeholder="Poznámky k dnešnímu dni (volitelné)..." rows="2"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn secondary" onclick="goToStartDayStep(1)">← Zpět</button>
+                <button class="modal-btn primary" onclick="goToStartDayStep(3)">Další →</button>
+            </div>
+        </div>
+
+        <!-- Step 3: Daily Challenge -->
+        <div class="start-day-step hidden" id="start-day-step-3">
+            <div class="modal-header">
+                <h2>⚔️ Denní výzva</h2>
+                <p>Přijmi výzvu a získej bonus XP!</p>
+            </div>
+            <div class="modal-body">
+                <div class="challenge-card" id="start-day-challenge">
+                    <div class="challenge-card-header">
+                        <span class="challenge-card-icon">🎯</span>
+                        <span class="challenge-card-title" id="challenge-title">Načítám...</span>
+                    </div>
+                    <p class="challenge-card-desc" id="challenge-description">-</p>
+                    <div class="challenge-card-reward">
+                        <span class="reward-label">Odměna:</span>
+                        <span class="reward-xp" id="challenge-xp">+50 XP</span>
+                    </div>
+                    <label class="challenge-accept-checkbox">
+                        <input type="checkbox" id="accept-challenge" checked>
+                        <span>Přijímám výzvu!</span>
+                    </label>
+                </div>
+                <!-- Streak & Profile Summary -->
+                <div class="start-day-summary">
+                    <div class="summary-item">
+                        <span class="summary-icon">🔥</span>
+                        <span class="summary-text">Streak: <strong id="summary-streak">0</strong> dní</span>
+                    </div>
+                    <div class="summary-item">
+                        <span class="summary-icon">⭐</span>
+                        <span class="summary-text">Level: <strong id="summary-level">1</strong></span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn secondary" onclick="goToStartDayStep(2)">← Zpět</button>
+                <button class="modal-btn primary success" onclick="completeStartDay()">
+                    ✓ Začít den
+                </button>
+            </div>
         </div>
     </div>
 </div>

@@ -5,9 +5,10 @@ services:
     ports:
       - "5000:5000"
     depends_on:
-      - mongodb
+      postgres:
+        condition: service_healthy
     environment:
-      - MONGO_URI=mongodb://mongodb:27017/pomodoro
+      - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
       - ML_SERVICE_URL=http://ml-service:5001
       - FLASK_ENV=development
     volumes:
@@ -23,17 +24,21 @@ services:
     ports:
       - "5001:5001"
     depends_on:
-      - mongodb
-      - ollama
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     environment:
-      - MONGO_URI=mongodb://mongodb:27017/pomodoro
+      - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
       - FLASK_ENV=development
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=mistral:7b
+      - OLLAMA_MODEL=qwen2.5:14b
       - OLLAMA_ENABLED=true
-      - OLLAMA_TIMEOUT=30
+      - OLLAMA_TIMEOUT=180
+      - EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
     volumes:
       - ./ml-service:/app
+      - embedding_cache:/root/.cache/torch/sentence_transformers
     restart: unless-stopped
     networks:
       - pomodoro-network
@@ -51,30 +56,39 @@ services:
     networks:
       - pomodoro-network
 
-  mongodb:
-    image: mongo:7
-    container_name: pomodoro-mongodb
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pomodoro-postgres
     ports:
-      - "27017:27017"
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=pomodoro
+      - POSTGRES_USER=pomodoro
+      - POSTGRES_PASSWORD=pomodoro_secret
     volumes:
-      - mongodb_data:/data/db
-      - ./data/mongodb:/data/backup
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/postgres/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pomodoro -d pomodoro"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
     networks:
       - pomodoro-network
 
-  mongo-express:
-    image: mongo-express
-    container_name: pomodoro-mongo-admin
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pomodoro-pgadmin
     ports:
-      - "8081:8081"
-    depends_on:
-      - mongodb
+      - "8081:80"
     environment:
-      - ME_CONFIG_MONGODB_SERVER=mongodb
-      - ME_CONFIG_MONGODB_PORT=27017
-      - ME_CONFIG_BASICAUTH_USERNAME=${ME_CONFIG_BASICAUTH_USERNAME:-admin}
-      - ME_CONFIG_BASICAUTH_PASSWORD=${ME_CONFIG_BASICAUTH_PASSWORD}
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_EMAIL:-admin@example.com}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_PASSWORD:-admin}
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - postgres
     restart: unless-stopped
     networks:
       - pomodoro-network
@@ -84,5 +98,7 @@ networks:
     driver: bridge
 
 volumes:
-  mongodb_data:
+  postgres_data:
+  pgadmin_data:
   ollama_data:
+  embedding_cache:
