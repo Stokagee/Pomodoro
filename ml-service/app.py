@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor, BurnoutPredictor, FocusOptimizer, SessionQualityPredictor, PatternAnomalyDetector
 from models.ai_challenge_generator import AIChallengeGenerator
+from models.ai_analyzer import AIAnalyzer, CacheManager
 
 # Load environment variables
 load_dotenv()
@@ -26,15 +27,30 @@ db = None
 # AI Challenge Generator (singleton)
 ai_generator = AIChallengeGenerator()
 
+# AI Analyzer (singleton - initialized after DB connection)
+ai_analyzer = None
+
 
 def init_db():
-    """Initialize MongoDB connection"""
-    global client, db
+    """Initialize MongoDB connection and AI Analyzer"""
+    global client, db, ai_analyzer
     try:
         client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
         client.admin.command('ping')
         db = client.get_database()
         print(f"ML Service connected to MongoDB: {MONGO_URI}")
+
+        # Initialize AI Analyzer with database
+        ai_analyzer = AIAnalyzer(db)
+        print("AI Analyzer initialized")
+
+        # Clear AI cache on startup (docker-compose up)
+        try:
+            deleted = ai_analyzer.cache.clear_all()
+            print(f"AI cache cleared on startup ({deleted} entries)")
+        except Exception as e:
+            print(f"Warning: Could not clear AI cache: {e}")
+
         return True
     except ConnectionFailure as e:
         print(f"MongoDB connection failed: {e}")
@@ -770,6 +786,458 @@ def ai_achievement_focus():
     return jsonify(suggestion)
 
 
+# === FocusAI - Learning Recommendation Endpoints ===
+
+@app.route('/api/ai/learning-recommendations', methods=['POST'])
+def ai_learning_recommendations():
+    """
+    FocusAI: Generate comprehensive learning recommendations
+
+    Expects JSON body with user analytics data:
+    {
+        "recent_sessions": [...],
+        "category_distribution": {...},
+        "skill_levels": [...],
+        "streak_data": {...},
+        "recent_tasks": [...],
+        "productivity_by_time": {...},
+        "achievements_progress": [...],
+        "user_profile": {...}
+    }
+
+    Returns:
+        dict: LearningRecommendation with skill_gaps, recommended_topics,
+              category_balance, personalized_tips, next_session_suggestion,
+              user_knowledge, motivational_message, analysis_summary
+    """
+    try:
+        user_data = request.get_json() or {}
+
+        # If no data provided, try to gather from database
+        if not user_data and db is not None:
+            user_data = _gather_user_analytics()
+
+        result = ai_generator.generate_learning_recommendations(user_data)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in learning-recommendations: {e}")
+        from models.pydantic_models import FallbackSuggestion
+        return jsonify(FallbackSuggestion.get_learning_recommendation())
+
+
+@app.route('/api/ai/next-session-suggestion', methods=['GET'])
+def ai_next_session_suggestion():
+    """
+    FocusAI: Quick suggestion for next session (optimized for timer start)
+
+    Query params:
+        category: Last used category (optional)
+        task: Last task description (optional)
+        hour: Current hour 0-23 (default: current hour)
+        sessions: Sessions completed today (default: 0)
+
+    Returns:
+        dict: SessionSuggestion with category, topic, preset, reason, confidence
+    """
+    from datetime import datetime
+
+    try:
+        context = {
+            'last_category': request.args.get('category', ''),
+            'last_task': request.args.get('task', ''),
+            'time_of_day': request.args.get('hour', datetime.now().hour, type=int),
+            'sessions_today': request.args.get('sessions', 0, type=int)
+        }
+
+        result = ai_generator.suggest_next_session_topic(context)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in next-session-suggestion: {e}")
+        from models.pydantic_models import FallbackSuggestion
+        return jsonify(FallbackSuggestion.get_session_suggestion(
+            request.args.get('category'),
+            datetime.now().hour
+        ))
+
+
+@app.route('/api/ai/extract-topics', methods=['POST'])
+def ai_extract_topics():
+    """
+    FocusAI: Extract technologies, concepts, and expertise areas from task history
+
+    Expects JSON body:
+    {
+        "tasks": [
+            {"task": "React hooks refactoring", "category": "Coding"},
+            {"task": "Python async learning", "category": "Learning"},
+            ...
+        ]
+    }
+
+    Returns:
+        dict: UserKnowledge with technologies, concepts, expertise_areas
+    """
+    try:
+        data = request.get_json() or {}
+        tasks = data.get('tasks', [])
+
+        # If no tasks provided, try to get from database
+        if not tasks and db is not None:
+            try:
+                sessions = list(db.sessions.find(
+                    {'task': {'$exists': True, '$ne': ''}},
+                    {'task': 1, 'category': 1, '_id': 0}
+                ).sort('created_at', -1).limit(100))
+                tasks = sessions
+            except Exception as e:
+                print(f"Error fetching tasks: {e}")
+                tasks = []
+
+        result = ai_generator.extract_topics_from_tasks(tasks)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in extract-topics: {e}")
+        return jsonify({
+            "technologies": [],
+            "concepts": [],
+            "expertise_areas": []
+        })
+
+
+@app.route('/api/ai/analyze-patterns', methods=['POST'])
+def ai_analyze_patterns():
+    """
+    FocusAI: Analyze productivity patterns and provide recommendations
+
+    Expects JSON body:
+    {
+        "hourly_productivity": {...},
+        "daily_stats": {...}
+    }
+
+    Returns:
+        dict: PatternAnalysis with productivity stats, recommendations, warnings
+    """
+    try:
+        data = request.get_json() or {}
+
+        # If no data provided, try to gather from database
+        if not data and db is not None:
+            data = _gather_productivity_data()
+
+        result = ai_generator.analyze_productivity_patterns(data)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in analyze-patterns: {e}")
+        return jsonify({
+            "productivity": {
+                "best_hours": [9, 10, 14],
+                "worst_hours": [12, 13, 22],
+                "best_day": "Unknown",
+                "avg_sessions_per_day": 0,
+                "consistency_score": 0
+            },
+            "recommendations": [],
+            "warnings": []
+        })
+
+
+def _gather_user_analytics() -> dict:
+    """Helper to gather user analytics from database for AI"""
+    if db is None:
+        return {}
+
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+
+    try:
+        # Get recent sessions (last 30 days)
+        thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()[:10]
+        recent_sessions = list(db.sessions.find({
+            'completed': True,
+            'date': {'$gte': thirty_days_ago}
+        }).sort('created_at', -1))
+
+        for s in recent_sessions:
+            s['_id'] = str(s['_id'])
+
+        # Calculate category distribution
+        cat_stats = defaultdict(lambda: {'sessions': 0, 'minutes': 0})
+        total_sessions = len(recent_sessions)
+
+        for s in recent_sessions:
+            cat = s.get('category', 'Other')
+            cat_stats[cat]['sessions'] += 1
+            cat_stats[cat]['minutes'] += s.get('duration_minutes', 0)
+
+        category_distribution = {}
+        for cat, stats in cat_stats.items():
+            category_distribution[cat] = {
+                'percentage': round(stats['sessions'] / total_sessions * 100, 1) if total_sessions > 0 else 0,
+                'sessions': stats['sessions'],
+                'minutes': stats['minutes']
+            }
+
+        # Get skill levels
+        skill_levels = list(db.category_skills.find({}, {'_id': 0})) if 'category_skills' in db.list_collection_names() else []
+
+        # Get recent tasks
+        recent_tasks = [
+            {'task': s.get('task', ''), 'category': s.get('category', '')}
+            for s in recent_sessions[:100]
+            if s.get('task')
+        ]
+
+        # Get user profile
+        user_profile = db.user_profile.find_one({'user_id': 'default'}, {'_id': 0}) or {}
+
+        return {
+            'recent_sessions': recent_sessions[:100],
+            'category_distribution': category_distribution,
+            'skill_levels': skill_levels,
+            'streak_data': {},
+            'recent_tasks': recent_tasks,
+            'productivity_by_time': {},
+            'achievements_progress': [],
+            'user_profile': user_profile
+        }
+    except Exception as e:
+        print(f"Error gathering user analytics: {e}")
+        return {}
+
+
+def _gather_productivity_data() -> dict:
+    """Helper to gather productivity data for pattern analysis"""
+    if db is None:
+        return {}
+
+    from datetime import datetime, timedelta
+    from collections import defaultdict
+
+    try:
+        # Get sessions from last 14 days
+        fourteen_days_ago = (datetime.now() - timedelta(days=14)).isoformat()[:10]
+        sessions = list(db.sessions.find({
+            'completed': True,
+            'date': {'$gte': fourteen_days_ago}
+        }))
+
+        # Calculate hourly stats
+        hourly_stats = defaultdict(lambda: {'sessions': 0, 'ratings': []})
+        daily_stats = defaultdict(lambda: {'sessions': 0, 'minutes': 0})
+
+        for s in sessions:
+            hour = s.get('hour', 12)
+            date = s.get('date', '')
+
+            hourly_stats[hour]['sessions'] += 1
+            if s.get('productivity_rating'):
+                hourly_stats[hour]['ratings'].append(s['productivity_rating'])
+
+            if date:
+                daily_stats[date]['sessions'] += 1
+                daily_stats[date]['minutes'] += s.get('duration_minutes', 0)
+
+        return {
+            'hourly_productivity': dict(hourly_stats),
+            'daily_stats': dict(daily_stats)
+        }
+    except Exception as e:
+        print(f"Error gathering productivity data: {e}")
+        return {}
+
+
+# =============================================================================
+# NEW AI ANALYZER ENDPOINTS (Full LLM Analysis)
+# =============================================================================
+
+@app.route('/api/ai/v2/health')
+def ai_v2_health():
+    """Health check for new AI Analyzer"""
+    if ai_analyzer is None:
+        return jsonify({'status': 'not_initialized', 'message': 'AI Analyzer not initialized'}), 503
+    return jsonify(ai_analyzer.health_check())
+
+
+@app.route('/api/ai/morning-briefing')
+def ai_morning_briefing():
+    """
+    Get AI-generated morning briefing with predictions and recommendations.
+    Full LLM analysis with session notes from last 30 days.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.morning_briefing()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/evening-review')
+def ai_evening_review():
+    """
+    Get AI-generated evening review and reflection.
+    Analyzes today's sessions and provides insights for tomorrow.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.evening_review()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/integrated-insight')
+def ai_integrated_insight():
+    """
+    Get cross-model integrated recommendation.
+    Combines burnout, anomaly, productivity, and schedule analyses.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.integrated_insight()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/analyze-burnout')
+def ai_analyze_burnout():
+    """
+    Full LLM burnout risk analysis with notes context.
+    Analyzes session notes for burnout signals and provides recovery plan.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.analyze_burnout()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/analyze-anomalies')
+def ai_analyze_anomalies():
+    """
+    Full LLM anomaly detection.
+    Detects unusual patterns in behavior including notes sentiment analysis.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.analyze_anomalies()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/analyze-quality', methods=['GET', 'POST'])
+def ai_analyze_quality():
+    """
+    Full LLM quality prediction before session start.
+
+    Query params / JSON body:
+        preset: Preset to use (default: deep_work)
+        category: Optional category for context
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        if request.method == 'POST':
+            data = request.get_json() or {}
+            preset = data.get('preset', 'deep_work')
+            category = data.get('category')
+        else:
+            preset = request.args.get('preset', 'deep_work')
+            category = request.args.get('category')
+
+        result = ai_analyzer.analyze_quality(preset, category)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/optimal-schedule-ai')
+def ai_optimal_schedule():
+    """
+    Full LLM schedule optimization.
+
+    Query params:
+        day: Day to optimize (default: today)
+        sessions: Number of sessions to plan (default: 6)
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        day = request.args.get('day', 'today')
+        sessions = int(request.args.get('sessions', 6))
+        sessions = max(1, min(sessions, 12))
+
+        result = ai_analyzer.get_optimal_schedule(day, sessions)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/learning-v2')
+def ai_learning_v2():
+    """
+    Full LLM learning recommendations.
+    Analyzes session notes for learning patterns and gaps.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        result = ai_analyzer.get_learning_recommendations()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e), 'fallback': True}), 500
+
+
+@app.route('/api/ai/invalidate-cache', methods=['POST'])
+def ai_invalidate_cache():
+    """
+    Invalidate all AI caches.
+    Called automatically when a new session is logged.
+    """
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        invalidated = ai_analyzer.cache.invalidate_all()
+        return jsonify({
+            'status': 'invalidated',
+            'invalidated_count': invalidated,
+            'message': f'Invalidated {invalidated} cache entries'
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/ai/cache-status')
+def ai_cache_status():
+    """Get current AI cache status."""
+    if ai_analyzer is None:
+        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+
+    try:
+        status = ai_analyzer.cache.get_status()
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 if __name__ == '__main__':
     print("\n" + "=" * 50)
     print("  POMODORO ML SERVICE")
@@ -799,6 +1267,22 @@ if __name__ == '__main__':
     print("    GET  /api/ai/weekly-quest     - AI weekly quests")
     print("    GET  /api/ai/motivation       - AI motivation message")
     print("    GET  /api/ai/achievement-focus - Achievement suggestion")
+    print("\n  FocusAI Learning Endpoints:")
+    print("    POST /api/ai/learning-recommendations - Full learning analysis")
+    print("    GET  /api/ai/next-session-suggestion  - Quick session suggestion")
+    print("    POST /api/ai/extract-topics           - Extract topics from tasks")
+    print("    POST /api/ai/analyze-patterns         - Productivity pattern analysis")
+    print("\n  NEW AI Analyzer Endpoints (Full LLM with Notes):")
+    print("    GET  /api/ai/morning-briefing    - Morning briefing & daily plan")
+    print("    GET  /api/ai/evening-review      - Evening review & reflection")
+    print("    GET  /api/ai/integrated-insight  - Cross-model recommendations")
+    print("    GET  /api/ai/analyze-burnout     - LLM burnout analysis")
+    print("    GET  /api/ai/analyze-anomalies   - LLM anomaly detection")
+    print("    GET  /api/ai/analyze-quality     - LLM quality prediction")
+    print("    GET  /api/ai/optimal-schedule-ai - LLM schedule optimization")
+    print("    GET  /api/ai/learning-v2         - LLM learning recommendations")
+    print("    POST /api/ai/invalidate-cache    - Invalidate AI cache")
+    print("    GET  /api/ai/cache-status        - AI cache status")
     print("\n" + "=" * 50 + "\n")
 
     app.run(host='0.0.0.0', port=5001, debug=True)

@@ -34,7 +34,7 @@
   "sessions_before_long_break": 4,
   "long_break_minutes": 30,
   "daily_goal_sessions": 10,
-  "sound_enabled": true,
+  "sound_enabled": false,
   "notification_enabled": true,
   "auto_start_break": false,
   "show_time_in_tab": false,

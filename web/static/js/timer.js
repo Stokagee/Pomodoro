@@ -1227,6 +1227,211 @@ class PomodoroTimer {
     }
 }
 
+// =============================================================================
+// FOCUSAI LEARNING RECOMMENDER - Client-side Functions
+// =============================================================================
+
+// Global state for AI suggestions
+let currentAISuggestion = null;
+let aiSuggestionVisible = true;
+
+/**
+ * Load AI suggestion for next session
+ */
+async function loadAISuggestion() {
+    const panel = document.getElementById('ai-suggestion-panel');
+    const loading = document.getElementById('ai-loading');
+    const result = document.getElementById('ai-result');
+    const error = document.getElementById('ai-error');
+
+    if (!panel) return;
+
+    // Show loading state
+    loading.classList.remove('hidden');
+    result.classList.add('hidden');
+    error.classList.add('hidden');
+
+    try {
+        const response = await fetch('/api/ai/next-session');
+        const data = await response.json();
+
+        if (data && data.topic) {
+            currentAISuggestion = data;
+            displayAISuggestion(data);
+        } else {
+            showAIError();
+        }
+    } catch (err) {
+        console.error('AI suggestion failed:', err);
+        showAIError();
+    }
+}
+
+/**
+ * Display AI suggestion in the panel
+ */
+function displayAISuggestion(data) {
+    const loading = document.getElementById('ai-loading');
+    const result = document.getElementById('ai-result');
+    const error = document.getElementById('ai-error');
+
+    // Update UI elements
+    const categoryEl = document.getElementById('ai-category');
+    const topicEl = document.getElementById('ai-topic');
+    const reasonEl = document.getElementById('ai-reason');
+    const confidenceBar = document.getElementById('ai-confidence-bar');
+    const confidenceValue = document.getElementById('ai-confidence-value');
+    const cacheStatus = document.getElementById('ai-cache-status');
+
+    if (categoryEl) categoryEl.textContent = data.category || 'Learning';
+    if (topicEl) topicEl.textContent = data.topic || 'Osobní rozvoj';
+    if (reasonEl) reasonEl.textContent = data.reason || 'Zkoušej nové věci každý den';
+
+    // Display confidence
+    const confidence = Math.round((data.confidence || 0.5) * 100);
+    if (confidenceBar) confidenceBar.style.width = `${confidence}%`;
+    if (confidenceValue) confidenceValue.textContent = `${confidence}%`;
+
+    // Cache status
+    if (cacheStatus) {
+        cacheStatus.textContent = data.from_cache ? '📦 Z cache' : '🧠 Čerstvá analýza';
+    }
+
+    // Show result, hide loading
+    loading.classList.add('hidden');
+    result.classList.remove('hidden');
+    error.classList.add('hidden');
+}
+
+/**
+ * Show error state in AI panel
+ */
+function showAIError() {
+    const loading = document.getElementById('ai-loading');
+    const result = document.getElementById('ai-result');
+    const error = document.getElementById('ai-error');
+
+    loading.classList.add('hidden');
+    result.classList.add('hidden');
+    error.classList.remove('hidden');
+}
+
+/**
+ * Hide AI suggestion panel
+ */
+function hideAISuggestion() {
+    const panel = document.getElementById('ai-suggestion-panel');
+    if (panel) {
+        panel.classList.add('hidden');
+        aiSuggestionVisible = false;
+    }
+}
+
+/**
+ * Show AI suggestion panel
+ */
+function showAISuggestionPanel() {
+    const panel = document.getElementById('ai-suggestion-panel');
+    if (panel) {
+        panel.classList.remove('hidden');
+        aiSuggestionVisible = true;
+    }
+}
+
+/**
+ * Refresh AI suggestion (invalidate cache and reload)
+ */
+async function refreshAISuggestion() {
+    // First invalidate the cache
+    try {
+        await fetch('/api/ai/invalidate-cache?type=next_session', { method: 'POST' });
+    } catch (err) {
+        console.warn('Cache invalidation failed:', err);
+    }
+
+    // Then reload suggestion
+    await loadAISuggestion();
+}
+
+/**
+ * Use the AI suggestion - fill in the task input
+ */
+function useSuggestion() {
+    if (!currentAISuggestion) return;
+
+    const taskInput = document.getElementById('task-input');
+    const categorySelect = document.getElementById('category-select');
+
+    if (taskInput && currentAISuggestion.topic) {
+        taskInput.value = currentAISuggestion.topic;
+    }
+
+    if (categorySelect && currentAISuggestion.category) {
+        // Check if the category exists in the select
+        const options = Array.from(categorySelect.options);
+        const matchingOption = options.find(opt =>
+            opt.value.toLowerCase() === currentAISuggestion.category.toLowerCase()
+        );
+
+        if (matchingOption) {
+            categorySelect.value = matchingOption.value;
+        }
+    }
+
+    // Also update preset if suggested
+    if (currentAISuggestion.preset && window.pomodoroTimer) {
+        const presetBtn = document.querySelector(`[data-preset="${currentAISuggestion.preset}"]`);
+        if (presetBtn) {
+            presetBtn.click();
+        }
+    }
+
+    // Hide the panel after using suggestion
+    hideAISuggestion();
+
+    // Show feedback toast
+    showToast('AI doporučení použito!', 'success');
+}
+
+/**
+ * Load more/different suggestions
+ */
+async function loadMoreSuggestions() {
+    await refreshAISuggestion();
+}
+
+/**
+ * Simple toast notification for feedback
+ */
+function showToast(message, type = 'info') {
+    // Check if toast container exists, if not create it
+    let container = document.getElementById('toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'toast-container';
+        container.className = 'toast-container';
+        document.body.appendChild(container);
+    }
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    toast.innerHTML = `
+        <span class="toast-icon">${type === 'success' ? '✓' : 'ℹ️'}</span>
+        <span class="toast-message">${message}</span>
+    `;
+
+    container.appendChild(toast);
+
+    // Animate in
+    setTimeout(() => toast.classList.add('show'), 10);
+
+    // Remove after 3 seconds
+    setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
 // Initialize timer when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     // Check if we have config (we're on the timer page)
@@ -1240,5 +1445,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if ('Notification' in window && Notification.permission === 'default') {
             Notification.requestPermission();
         }
+
+        // Load FocusAI suggestion after a short delay for better UX
+        setTimeout(() => {
+            loadAISuggestion();
+        }, 1000);
     }
 });

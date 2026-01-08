@@ -3640,3 +3640,231 @@ def update_weekly_quest_progress(quest_id=None):
         'newly_completed': newly_completed,
         'total_xp_earned': sum(q.get('xp_reward', 0) for q in newly_completed)
     }
+
+
+# =============================================================================
+# FOCUSAI LEARNING RECOMMENDER - Helper Functions
+# =============================================================================
+
+def get_recent_tasks(limit: int = 100) -> list:
+    """Get recent tasks (task field) from sessions for AI analysis.
+
+    Returns list of dicts with task and category.
+    """
+    database = get_db()
+    sessions = database.sessions.find(
+        {'task': {'$exists': True, '$ne': ''}},
+        {'task': 1, 'category': 1, '_id': 0}
+    ).sort('created_at', -1).limit(limit)
+    return list(sessions)
+
+
+def get_category_distribution() -> dict:
+    """Get percentage distribution of categories from all sessions.
+
+    Returns dict with category stats:
+    {
+        'Coding': {'percentage': 45.0, 'sessions': 90, 'minutes': 4680},
+        'Learning': {'percentage': 25.0, 'sessions': 50, 'minutes': 2600},
+        ...
+    }
+    """
+    database = get_db()
+    pipeline = [
+        {'$match': {'completed': True}},
+        {'$group': {
+            '_id': '$category',
+            'count': {'$sum': 1},
+            'minutes': {'$sum': '$duration_minutes'}
+        }}
+    ]
+    results = list(database.sessions.aggregate(pipeline))
+    total = sum(r['count'] for r in results)
+
+    return {
+        r['_id']: {
+            'percentage': round(r['count'] / total * 100, 1) if total > 0 else 0,
+            'sessions': r['count'],
+            'minutes': r['minutes']
+        }
+        for r in results
+    }
+
+
+def get_hourly_productivity() -> dict:
+    """Get productivity statistics by hour (0-23).
+
+    Returns dict with hour -> stats mapping:
+    {
+        '9': {'sessions': 15, 'avg_rating': 75.5},
+        '10': {'sessions': 20, 'avg_rating': 82.0},
+        ...
+    }
+    """
+    database = get_db()
+    pipeline = [
+        {'$match': {'completed': True, 'hour': {'$exists': True}}},
+        {'$group': {
+            '_id': '$hour',
+            'sessions': {'$sum': 1},
+            'avg_rating': {'$avg': {'$ifNull': ['$productivity_rating', 70]}}
+        }},
+        {'$sort': {'_id': 1}}
+    ]
+    results = list(database.sessions.aggregate(pipeline))
+
+    return {
+        str(r['_id']): {
+            'sessions': r['sessions'],
+            'avg_rating': round(r['avg_rating'], 1) if r['avg_rating'] else 70
+        }
+        for r in results
+    }
+
+
+def get_sessions_last_n_days(days: int = 30) -> list:
+    """Get all sessions from last N days.
+
+    Returns list of session documents.
+    """
+    database = get_db()
+    start_date = (date.today() - timedelta(days=days)).isoformat()
+
+    sessions = database.sessions.find({
+        'date': {'$gte': start_date},
+        'completed': True
+    }).sort('created_at', -1)
+
+    return list(sessions)
+
+
+def get_near_completion_achievements(threshold: float = 50.0) -> list:
+    """Get achievements that are close to completion (>= threshold%).
+
+    Returns list of achievement dicts with progress info.
+    """
+    database = get_db()
+    achievements = database.achievements.find({
+        'unlocked': False
+    })
+
+    near_completion = []
+    for ach in achievements:
+        progress = ach.get('progress', 0)
+        target = ach.get('target', 1)
+        percentage = (progress / target * 100) if target > 0 else 0
+
+        if percentage >= threshold:
+            near_completion.append({
+                'achievement_id': ach.get('achievement_id'),
+                'name': ach.get('name'),
+                'progress': progress,
+                'target': target,
+                'percentage': round(percentage, 1)
+            })
+
+    return near_completion
+
+
+def cache_ai_recommendation(rec_type: str, data: dict, hours: int = 24):
+    """Cache AI recommendation to MongoDB.
+
+    Args:
+        rec_type: Type of recommendation ('learning', 'next_session', 'topics')
+        data: The AI response data to cache
+        hours: Cache duration in hours
+    """
+    database = get_db()
+    database.ai_cache.update_one(
+        {'type': rec_type},
+        {
+            '$set': {
+                'data': data,
+                'generated_at': datetime.now(),
+                'expires_at': datetime.now() + timedelta(hours=hours)
+            }
+        },
+        upsert=True
+    )
+
+
+def get_cached_ai_recommendation(rec_type: str) -> dict:
+    """Get cached AI recommendation if still valid.
+
+    Args:
+        rec_type: Type of recommendation to retrieve
+
+    Returns:
+        Cached data dict or None if expired/not found
+    """
+    database = get_db()
+    cached = database.ai_cache.find_one({
+        'type': rec_type,
+        'expires_at': {'$gt': datetime.now()}
+    })
+    return cached['data'] if cached else None
+
+
+def invalidate_ai_cache(rec_type: str = None):
+    """Invalidate AI cache.
+
+    Args:
+        rec_type: Specific type to invalidate, or None for all
+    """
+    database = get_db()
+    if rec_type:
+        database.ai_cache.delete_one({'type': rec_type})
+    else:
+        database.ai_cache.delete_many({})
+
+
+def get_user_analytics_for_ai() -> dict:
+    """Gather all user data needed for FocusAI analysis.
+
+    Returns comprehensive dict with:
+    - recent_sessions: Last 30 days of sessions
+    - category_distribution: Percentage per category
+    - skill_levels: Category skills with levels
+    - streak_data: Streak statistics
+    - recent_tasks: Last 100 task texts
+    - productivity_by_time: Productivity by hour
+    - achievements_progress: Near-completion achievements
+    - user_profile: XP, level, title
+    """
+    return {
+        'recent_sessions': get_sessions_last_n_days(30),
+        'category_distribution': get_category_distribution(),
+        'skill_levels': get_category_skills(),
+        'streak_data': get_streak_stats(),
+        'recent_tasks': get_recent_tasks(limit=100),
+        'productivity_by_time': get_hourly_productivity(),
+        'achievements_progress': get_near_completion_achievements(threshold=50),
+        'user_profile': get_user_profile()
+    }
+
+
+def get_last_session_context() -> dict:
+    """Get context from the last session for quick AI suggestions.
+
+    Returns dict with last_category, last_task, etc.
+    """
+    database = get_db()
+    last_session = database.sessions.find_one(
+        {'completed': True},
+        sort=[('created_at', -1)]
+    )
+
+    if last_session:
+        return {
+            'last_category': last_session.get('category', ''),
+            'last_task': last_session.get('task', ''),
+            'last_preset': last_session.get('preset', 'deep_work'),
+            'last_rating': last_session.get('productivity_rating')
+        }
+
+    return {
+        'last_category': '',
+        'last_task': '',
+        'last_preset': 'deep_work',
+        'last_rating': None
+    }

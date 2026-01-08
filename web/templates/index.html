@@ -223,6 +223,52 @@
         <input type="text" id="task-input" class="task-input" placeholder="Na čem pracuješ? (volitelné)">
     </div>
 
+    <!-- FocusAI Suggestion Panel -->
+    <div id="ai-suggestion-panel" class="ai-suggestion-panel">
+        <div class="ai-suggestion-header">
+            <span class="ai-icon">🧠</span>
+            <span class="ai-title">FocusAI doporučuje</span>
+            <button class="ai-refresh-btn" onclick="refreshAISuggestion()" title="Obnovit doporučení">↻</button>
+            <button class="ai-close-btn" onclick="hideAISuggestion()" title="Zavřít">×</button>
+        </div>
+        <div class="ai-suggestion-content">
+            <div class="ai-suggestion-loading" id="ai-loading">
+                <span class="ai-spinner"></span>
+                <span>Analyzuji tvoje data...</span>
+            </div>
+            <div class="ai-suggestion-result hidden" id="ai-result">
+                <div class="suggested-topic">
+                    <span class="topic-category" id="ai-category"></span>
+                    <span class="topic-name" id="ai-topic"></span>
+                </div>
+                <p class="topic-reason" id="ai-reason"></p>
+                <div class="ai-confidence">
+                    <span class="confidence-label">Jistota:</span>
+                    <div class="confidence-bar">
+                        <div class="confidence-fill" id="ai-confidence-bar"></div>
+                    </div>
+                    <span class="confidence-value" id="ai-confidence-value">--</span>
+                </div>
+                <div class="ai-suggestion-actions">
+                    <button class="btn-use-suggestion" onclick="useSuggestion()">
+                        <span>✓</span> Použít toto téma
+                    </button>
+                    <button class="btn-different" onclick="loadMoreSuggestions()">
+                        <span>↻</span> Jiný nápad
+                    </button>
+                </div>
+            </div>
+            <div class="ai-suggestion-error hidden" id="ai-error">
+                <span class="error-icon">⚠️</span>
+                <span class="error-text">AI dočasně nedostupná</span>
+            </div>
+        </div>
+        <div class="ai-suggestion-footer">
+            <span class="ai-cache-status" id="ai-cache-status"></span>
+            <a href="/achievements" class="ai-more-link">Více doporučení →</a>
+        </div>
+    </div>
+
     <!-- Keyboard Shortcuts -->
     <div class="shortcuts-hint">
         <span class="shortcut-item"><kbd>Space</kbd> Start/Pause</span>

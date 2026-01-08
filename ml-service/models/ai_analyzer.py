@@ -1,0 +1,781 @@
+"""
+AI Analyzer - Full LLM-based analysis with session notes
+Uses Ollama for comprehensive analysis of user productivity patterns.
+"""
+
+import os
+import json
+import logging
+import hashlib
+from datetime import datetime, timedelta
+from typing import Optional, Dict, List, Any
+
+logger = logging.getLogger(__name__)
+
+
+class CacheManager:
+    """Manages AI response caching in MongoDB."""
+
+    # Cache durations in hours
+    CACHE_DURATIONS = {
+        'morning_briefing': 4,
+        'evening_review': 12,  # Until next day effectively
+        'integrated_insight': 2,
+        'analyze_burnout': 6,
+        'analyze_anomalies': 6,
+        'analyze_quality': 0.5,  # 30 minutes
+        'optimal_schedule': 4,
+        'prediction': 2,
+        'learning': 24
+    }
+
+    def __init__(self, db):
+        """Initialize cache manager with MongoDB database."""
+        self.collection = db.ai_cache
+        self._ensure_indexes()
+
+    def _ensure_indexes(self):
+        """Create indexes for efficient cache queries."""
+        try:
+            self.collection.create_index([('cache_type', 1), ('cache_key', 1)])
+            self.collection.create_index('expires_at')
+        except Exception as e:
+            logger.warning(f"Could not create cache indexes: {e}")
+
+    def _generate_key(self, params: dict) -> str:
+        """Generate cache key from parameters."""
+        params_str = json.dumps(params, sort_keys=True, default=str)
+        return hashlib.md5(params_str.encode()).hexdigest()[:16]
+
+    def get_cached(self, cache_type: str, params: dict = None) -> Optional[Dict]:
+        """Get cached response if valid."""
+        try:
+            query = {
+                'cache_type': cache_type,
+                'invalidated': False,
+                'expires_at': {'$gt': datetime.now()}
+            }
+            if params:
+                query['cache_key'] = self._generate_key(params)
+
+            result = self.collection.find_one(query)
+            if result:
+                logger.info(f"Cache hit for {cache_type}")
+                data = result.get('data', {})
+                data['from_cache'] = True
+                data['cached_at'] = result.get('generated_at')
+                return data
+
+            return None
+        except Exception as e:
+            logger.error(f"Cache get error: {e}")
+            return None
+
+    def set_cache(self, cache_type: str, data: Dict, params: dict = None):
+        """Store response in cache."""
+        try:
+            ttl_hours = self.CACHE_DURATIONS.get(cache_type, 1)
+            cache_key = self._generate_key(params) if params else None
+
+            doc = {
+                'cache_type': cache_type,
+                'cache_key': cache_key,
+                'data': data,
+                'generated_at': datetime.now(),
+                'expires_at': datetime.now() + timedelta(hours=ttl_hours),
+                'invalidated': False
+            }
+
+            self.collection.update_one(
+                {'cache_type': cache_type, 'cache_key': cache_key},
+                {'$set': doc},
+                upsert=True
+            )
+            logger.info(f"Cached {cache_type} for {ttl_hours} hours")
+        except Exception as e:
+            logger.error(f"Cache set error: {e}")
+
+    def invalidate_all(self):
+        """Invalidate all caches (called on new session)."""
+        try:
+            result = self.collection.update_many(
+                {},
+                {'$set': {'invalidated': True}}
+            )
+            logger.info(f"Invalidated {result.modified_count} cache entries")
+            return result.modified_count
+        except Exception as e:
+            logger.error(f"Cache invalidation error: {e}")
+            return 0
+
+    def clear_all(self):
+        """Clear entire cache (called on docker-compose up)."""
+        try:
+            result = self.collection.delete_many({})
+            logger.info(f"Cleared {result.deleted_count} cache entries")
+            return result.deleted_count
+        except Exception as e:
+            logger.error(f"Cache clear error: {e}")
+            return 0
+
+    def get_status(self) -> Dict:
+        """Get current cache status."""
+        try:
+            caches = list(self.collection.find({}, {'data': 0}))
+            now = datetime.now()
+            valid_count = len([
+                c for c in caches
+                if not c.get('invalidated') and c.get('expires_at', datetime.min) > now
+            ])
+            return {
+                'total_cached': len(caches),
+                'valid': valid_count,
+                'invalidated': len(caches) - valid_count,
+                'caches': [{
+                    'type': c['cache_type'],
+                    'key': c.get('cache_key'),
+                    'generated_at': c.get('generated_at').isoformat() if c.get('generated_at') else None,
+                    'expires_at': c.get('expires_at').isoformat() if c.get('expires_at') else None,
+                    'invalidated': c.get('invalidated', False),
+                    'valid': not c.get('invalidated') and c.get('expires_at', datetime.min) > now
+                } for c in caches]
+            }
+        except Exception as e:
+            logger.error(f"Cache status error: {e}")
+            return {'error': str(e)}
+
+
+class AIAnalyzer:
+    """Full LLM-based analyzer using Ollama."""
+
+    def __init__(self, db):
+        """Initialize AI Analyzer."""
+        self.db = db
+        self.ollama_url = os.getenv('OLLAMA_URL', 'http://ollama:11434')
+        self.model = os.getenv('OLLAMA_MODEL', 'mistral:7b')
+        self.enabled = os.getenv('OLLAMA_ENABLED', 'true').lower() == 'true'
+        self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '60'))
+
+        self.cache = CacheManager(db)
+
+        # Import prompts
+        from prompts import (
+            MASTER_SYSTEM_PROMPT,
+            SESSION_PREDICTION_PROMPT,
+            QUALITY_PREDICTION_PROMPT,
+            ANOMALY_DETECTION_PROMPT,
+            BURNOUT_DETECTION_PROMPT,
+            SCHEDULE_OPTIMIZATION_PROMPT,
+            MORNING_BRIEFING_PROMPT,
+            EVENING_REVIEW_PROMPT,
+            INTEGRATED_INSIGHT_PROMPT,
+            LEARNING_RECOMMENDATION_PROMPT,
+            format_session_data,
+            format_category_distribution
+        )
+
+        self.prompts = {
+            'master': MASTER_SYSTEM_PROMPT,
+            'prediction': SESSION_PREDICTION_PROMPT,
+            'quality': QUALITY_PREDICTION_PROMPT,
+            'anomaly': ANOMALY_DETECTION_PROMPT,
+            'burnout': BURNOUT_DETECTION_PROMPT,
+            'schedule': SCHEDULE_OPTIMIZATION_PROMPT,
+            'morning': MORNING_BRIEFING_PROMPT,
+            'evening': EVENING_REVIEW_PROMPT,
+            'integrated': INTEGRATED_INSIGHT_PROMPT,
+            'learning': LEARNING_RECOMMENDATION_PROMPT
+        }
+        self.format_session_data = format_session_data
+        self.format_category_distribution = format_category_distribution
+
+        logger.info(f"AIAnalyzer initialized: enabled={self.enabled}, model={self.model}")
+
+    def _get_sessions_with_notes(self, days: int = 30) -> List[Dict]:
+        """Get all sessions with notes from specified period."""
+        try:
+            cutoff = datetime.now() - timedelta(days=days)
+            sessions = list(self.db.sessions.find({
+                'completed': True,
+                'timestamp': {'$gte': cutoff}
+            }).sort('timestamp', -1))
+
+            # Convert ObjectId and format
+            formatted = []
+            for s in sessions:
+                formatted.append({
+                    'date': s.get('date', ''),
+                    'time': s.get('time', ''),
+                    'preset': s.get('preset', 'standard'),
+                    'category': s.get('category', 'Unknown'),
+                    'task': s.get('task', ''),
+                    'notes': s.get('notes', ''),
+                    'productivity_rating': s.get('productivity_rating'),
+                    'duration_minutes': s.get('duration_minutes', 25),
+                    'hour': s.get('hour', 12),
+                    'day_of_week': s.get('day_of_week', 0)
+                })
+
+            return formatted
+        except Exception as e:
+            logger.error(f"Error getting sessions: {e}")
+            return []
+
+    def _get_today_sessions(self) -> List[Dict]:
+        """Get today's sessions with notes."""
+        today = datetime.now().strftime('%Y-%m-%d')
+        try:
+            sessions = list(self.db.sessions.find({
+                'date': today,
+                'completed': True
+            }).sort('timestamp', 1))
+
+            return [{
+                'time': s.get('time', ''),
+                'preset': s.get('preset', 'standard'),
+                'category': s.get('category', 'Unknown'),
+                'task': s.get('task', ''),
+                'notes': s.get('notes', ''),
+                'productivity_rating': s.get('productivity_rating'),
+                'duration_minutes': s.get('duration_minutes', 25)
+            } for s in sessions]
+        except Exception as e:
+            logger.error(f"Error getting today's sessions: {e}")
+            return []
+
+    def _get_baseline_stats(self, sessions: List[Dict]) -> Dict:
+        """Calculate baseline statistics from sessions."""
+        if not sessions:
+            return {
+                'avg_sessions': 0,
+                'avg_productivity': 0,
+                'typical_hours': 'N/A',
+                'top_category': 'N/A'
+            }
+
+        # Group by date
+        by_date = {}
+        for s in sessions:
+            date = s.get('date', '')
+            if date not in by_date:
+                by_date[date] = []
+            by_date[date].append(s)
+
+        avg_sessions = len(sessions) / max(len(by_date), 1)
+
+        # Average productivity
+        ratings = [s.get('productivity_rating') for s in sessions if s.get('productivity_rating')]
+        avg_productivity = sum(ratings) / len(ratings) if ratings else 0
+
+        # Typical hours
+        hours = [s.get('hour', 12) for s in sessions]
+        if hours:
+            avg_hour = sum(hours) / len(hours)
+            typical_hours = f"{int(avg_hour)}:00 - {int(avg_hour)+2}:00"
+        else:
+            typical_hours = 'N/A'
+
+        # Top category
+        categories = {}
+        for s in sessions:
+            cat = s.get('category', 'Unknown')
+            categories[cat] = categories.get(cat, 0) + 1
+        top_category = max(categories, key=categories.get) if categories else 'N/A'
+
+        return {
+            'avg_sessions': round(avg_sessions, 1),
+            'avg_productivity': round(avg_productivity, 1),
+            'typical_hours': typical_hours,
+            'top_category': top_category
+        }
+
+    def _call_ollama(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Make a call to Ollama API."""
+        if not self.enabled:
+            logger.warning("Ollama is disabled")
+            return None
+
+        try:
+            import requests
+
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            response = requests.post(
+                f"{self.ollama_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "num_predict": 2000
+                    }
+                },
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                return result.get('message', {}).get('content', '')
+            else:
+                logger.error(f"Ollama returned status {response.status_code}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Ollama call error: {e}")
+            return None
+
+    def _parse_json_response(self, response: str) -> Optional[Dict]:
+        """Parse JSON from LLM response."""
+        if not response:
+            return None
+
+        try:
+            # Try direct parse
+            return json.loads(response)
+        except json.JSONDecodeError:
+            pass
+
+        # Try to extract JSON from response
+        try:
+            start = response.find('{')
+            end = response.rfind('}') + 1
+            if start >= 0 and end > start:
+                return json.loads(response[start:end])
+        except json.JSONDecodeError:
+            pass
+
+        logger.error(f"Failed to parse JSON from response: {response[:200]}")
+        return None
+
+    def _get_category_distribution(self, sessions: List[Dict]) -> Dict:
+        """Calculate category distribution from sessions."""
+        categories = {}
+        total = len(sessions)
+
+        for s in sessions:
+            cat = s.get('category', 'Unknown')
+            if cat not in categories:
+                categories[cat] = {'sessions': 0, 'percentage': 0}
+            categories[cat]['sessions'] += 1
+
+        for cat in categories:
+            categories[cat]['percentage'] = round(
+                (categories[cat]['sessions'] / total * 100) if total > 0 else 0,
+                1
+            )
+
+        return categories
+
+    def _get_skill_levels(self) -> List[Dict]:
+        """Get skill levels from database."""
+        try:
+            skills = list(self.db.skills.find({}))
+            return [{
+                'category': s.get('category', 'Unknown'),
+                'level': s.get('level', 1),
+                'xp': s.get('current_xp', 0)
+            } for s in skills]
+        except Exception as e:
+            logger.error(f"Error getting skills: {e}")
+            return []
+
+    def _get_user_profile(self) -> Dict:
+        """Get user profile from database."""
+        try:
+            profile = self.db.user_profile.find_one({})
+            if profile:
+                return {
+                    'level': profile.get('level', 1),
+                    'total_xp': profile.get('total_xp_earned', 0),
+                    'streak': profile.get('streak', 0)
+                }
+            return {'level': 1, 'total_xp': 0, 'streak': 0}
+        except Exception as e:
+            logger.error(f"Error getting profile: {e}")
+            return {'level': 1, 'total_xp': 0, 'streak': 0}
+
+    def _create_fallback(self, endpoint: str, error: str = None) -> Dict:
+        """Create fallback response when AI is unavailable."""
+        return {
+            'ai_available': False,
+            'fallback': True,
+            'from_cache': False,
+            'error': error or 'AI service unavailable',
+            'message': 'Using fallback response - AI analysis not available',
+            'timestamp': datetime.now().isoformat()
+        }
+
+    # =========================================================================
+    # PUBLIC ANALYSIS METHODS
+    # =========================================================================
+
+    def morning_briefing(self) -> Dict:
+        """Generate comprehensive morning briefing."""
+        # Check cache
+        cached = self.cache.get_cached('morning_briefing')
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(30)
+        if not sessions:
+            return self._create_fallback('morning_briefing', 'No session data')
+
+        profile = self._get_user_profile()
+        today = datetime.now()
+        yesterday = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+
+        # Yesterday's data
+        yesterday_sessions = [s for s in sessions if s.get('date') == yesterday]
+        yesterday_notes = "\n".join([
+            f"- {s.get('notes', '')}" for s in yesterday_sessions if s.get('notes')
+        ]) or "No notes from yesterday"
+
+        yesterday_ratings = [s.get('productivity_rating') for s in yesterday_sessions if s.get('productivity_rating')]
+        yesterday_rating = sum(yesterday_ratings) / len(yesterday_ratings) if yesterday_ratings else 0
+
+        context = {
+            'session_data': self.format_session_data(sessions[:50]),  # Limit for context
+            'day_of_week': today.strftime('%A'),
+            'date': today.strftime('%Y-%m-%d'),
+            'current_time': today.strftime('%H:%M'),
+            'yesterday_sessions': len(yesterday_sessions),
+            'yesterday_rating': round(yesterday_rating, 1),
+            'streak': profile.get('streak', 0),
+            'yesterday_notes': yesterday_notes
+        }
+
+        prompt = self.prompts['morning'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            self.cache.set_cache('morning_briefing', result)
+            return result
+
+        return self._create_fallback('morning_briefing')
+
+    def evening_review(self) -> Dict:
+        """Generate evening review and reflection."""
+        cached = self.cache.get_cached('evening_review')
+        if cached:
+            return cached
+
+        today_sessions = self._get_today_sessions()
+        if not today_sessions:
+            return self._create_fallback('evening_review', 'No sessions today')
+
+        profile = self._get_user_profile()
+        today_notes = "\n".join([
+            f"[{s.get('time')}] {s.get('notes', '')}"
+            for s in today_sessions if s.get('notes')
+        ]) or "No notes today"
+
+        ratings = [s.get('productivity_rating') for s in today_sessions if s.get('productivity_rating')]
+        actual_rating = sum(ratings) / len(ratings) if ratings else 0
+
+        context = {
+            'today_sessions': self.format_session_data(today_sessions),
+            'today_notes': today_notes,
+            'predicted_sessions': 5,  # Could get from morning prediction
+            'predicted_productivity': 75,
+            'actual_sessions': len(today_sessions),
+            'actual_rating': round(actual_rating, 1),
+            'streak': profile.get('streak', 0),
+            'streak_maintained': len(today_sessions) > 0
+        }
+
+        prompt = self.prompts['evening'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            self.cache.set_cache('evening_review', result)
+            return result
+
+        return self._create_fallback('evening_review')
+
+    def analyze_burnout(self) -> Dict:
+        """Full LLM burnout risk analysis."""
+        cached = self.cache.get_cached('analyze_burnout')
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(14)  # 2 weeks
+        if len(sessions) < 5:
+            return self._create_fallback('analyze_burnout', 'Insufficient data (need 5+ sessions)')
+
+        profile = self._get_user_profile()
+        baseline = self._get_baseline_stats(sessions)
+
+        # Calculate night percentage
+        night_sessions = len([s for s in sessions if s.get('hour', 12) >= 21])
+        night_percentage = (night_sessions / len(sessions) * 100) if sessions else 0
+
+        # This week's data
+        week_ago = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        weekly_sessions = [s for s in sessions if s.get('date', '') >= week_ago]
+        weekly_ratings = [s.get('productivity_rating') for s in weekly_sessions if s.get('productivity_rating')]
+        weekly_rating = sum(weekly_ratings) / len(weekly_ratings) if weekly_ratings else 0
+
+        context = {
+            'session_data': self.format_session_data(sessions),
+            'streak': profile.get('streak', 0),
+            'weekly_sessions': len(weekly_sessions),
+            'weekly_rating': round(weekly_rating, 1),
+            'night_percentage': round(night_percentage, 1)
+        }
+
+        prompt = self.prompts['burnout'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            result['sessions_analyzed'] = len(sessions)
+            self.cache.set_cache('analyze_burnout', result)
+            return result
+
+        return self._create_fallback('analyze_burnout')
+
+    def analyze_anomalies(self) -> Dict:
+        """Full LLM anomaly detection."""
+        cached = self.cache.get_cached('analyze_anomalies')
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(14)
+        if len(sessions) < 7:
+            return self._create_fallback('analyze_anomalies', 'Insufficient data (need 7+ sessions)')
+
+        baseline = self._get_baseline_stats(sessions)
+
+        context = {
+            'session_data': self.format_session_data(sessions),
+            'avg_sessions': baseline['avg_sessions'],
+            'avg_productivity': baseline['avg_productivity'],
+            'typical_hours': baseline['typical_hours'],
+            'top_category': baseline['top_category']
+        }
+
+        prompt = self.prompts['anomaly'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            result['sessions_analyzed'] = len(sessions)
+            self.cache.set_cache('analyze_anomalies', result)
+            return result
+
+        return self._create_fallback('analyze_anomalies')
+
+    def analyze_quality(self, preset: str = 'deep_work', category: str = None) -> Dict:
+        """Full LLM quality prediction before session."""
+        params = {'preset': preset, 'category': category}
+        cached = self.cache.get_cached('analyze_quality', params)
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(30)
+        today_sessions = self._get_today_sessions()
+
+        now = datetime.now()
+
+        # Minutes since last session
+        minutes_since_last = 60  # Default
+        if today_sessions:
+            try:
+                last_time = today_sessions[-1].get('time', '12:00')
+                last_hour, last_min = map(int, last_time.split(':'))
+                last_dt = now.replace(hour=last_hour, minute=last_min)
+                minutes_since_last = int((now - last_dt).total_seconds() / 60)
+            except:
+                pass
+
+        context = {
+            'session_data': self.format_session_data(sessions[:30]),
+            'hour': now.hour,
+            'day_of_week': now.strftime('%A'),
+            'preset': preset,
+            'category': category or 'Not specified',
+            'sessions_today': len(today_sessions),
+            'minutes_since_last': max(0, minutes_since_last)
+        }
+
+        prompt = self.prompts['quality'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            self.cache.set_cache('analyze_quality', result, params)
+            return result
+
+        return self._create_fallback('analyze_quality')
+
+    def get_optimal_schedule(self, day: str = 'today', num_sessions: int = 6) -> Dict:
+        """Full LLM schedule optimization."""
+        params = {'day': day, 'num_sessions': num_sessions}
+        cached = self.cache.get_cached('optimal_schedule', params)
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(30)
+        if len(sessions) < 10:
+            return self._create_fallback('optimal_schedule', 'Insufficient data (need 10+ sessions)')
+
+        target_day = datetime.now().strftime('%A') if day == 'today' else day.capitalize()
+
+        context = {
+            'session_data': self.format_session_data(sessions),
+            'target_day': target_day,
+            'num_sessions': num_sessions
+        }
+
+        prompt = self.prompts['schedule'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            result['for_day'] = target_day
+            self.cache.set_cache('optimal_schedule', result, params)
+            return result
+
+        return self._create_fallback('optimal_schedule')
+
+    def integrated_insight(self) -> Dict:
+        """Cross-model integrated recommendation."""
+        cached = self.cache.get_cached('integrated_insight')
+        if cached:
+            return cached
+
+        # Get results from other analyses (use cache if available)
+        burnout = self.analyze_burnout()
+        anomalies = self.analyze_anomalies()
+        sessions = self._get_sessions_with_notes(30)
+
+        # Get productivity patterns
+        baseline = self._get_baseline_stats(sessions)
+        productivity_analysis = {
+            'baseline': baseline,
+            'recent_trend': 'stable',  # Could calculate
+            'sessions_last_7_days': len([s for s in sessions if s.get('date', '') >= (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')])
+        }
+
+        # Get schedule analysis
+        schedule = self.get_optimal_schedule()
+
+        context = {
+            'burnout_analysis': json.dumps(burnout, default=str),
+            'anomaly_analysis': json.dumps(anomalies, default=str),
+            'productivity_analysis': json.dumps(productivity_analysis, default=str),
+            'schedule_analysis': json.dumps(schedule, default=str),
+            'session_data': self.format_session_data(sessions[:20])  # Recent context
+        }
+
+        prompt = self.prompts['integrated'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            result['models_integrated'] = ['burnout', 'anomaly', 'productivity', 'schedule']
+            self.cache.set_cache('integrated_insight', result)
+            return result
+
+        return self._create_fallback('integrated_insight')
+
+    def get_learning_recommendations(self) -> Dict:
+        """Full LLM learning recommendations."""
+        cached = self.cache.get_cached('learning')
+        if cached:
+            return cached
+
+        sessions = self._get_sessions_with_notes(30)
+        if len(sessions) < 5:
+            return self._create_fallback('learning', 'Insufficient data')
+
+        profile = self._get_user_profile()
+        category_dist = self._get_category_distribution(sessions)
+        skill_levels = self._get_skill_levels()
+
+        # Top categories
+        top_categories = sorted(
+            category_dist.items(),
+            key=lambda x: x[1]['sessions'],
+            reverse=True
+        )[:3]
+        top_cat_names = [c[0] for c in top_categories]
+
+        context = {
+            'session_data': self.format_session_data(sessions),
+            'level': profile.get('level', 1),
+            'total_xp': profile.get('total_xp', 0),
+            'streak': profile.get('streak', 0),
+            'top_categories': ', '.join(top_cat_names),
+            'category_distribution': self.format_category_distribution(category_dist),
+            'skill_levels': json.dumps(skill_levels, default=str)
+        }
+
+        prompt = self.prompts['learning'].format(**context)
+        response = self._call_ollama(prompt, self.prompts['master'])
+        result = self._parse_json_response(response)
+
+        if result:
+            result['generated_at'] = datetime.now().isoformat()
+            result['ai_generated'] = True
+            self.cache.set_cache('learning', result)
+            return result
+
+        return self._create_fallback('learning')
+
+    def health_check(self) -> Dict:
+        """Check if Ollama is available."""
+        if not self.enabled:
+            return {
+                'status': 'disabled',
+                'message': 'Ollama is disabled via OLLAMA_ENABLED=false',
+                'ollama_url': self.ollama_url
+            }
+
+        try:
+            import requests
+            response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
+            if response.status_code == 200:
+                models = response.json().get('models', [])
+                model_names = [m.get('name', '') for m in models]
+                has_model = any(self.model in name for name in model_names)
+
+                return {
+                    'status': 'healthy' if has_model else 'model_missing',
+                    'message': f"Ollama running. Model {self.model} {'found' if has_model else 'not found'}.",
+                    'ollama_url': self.ollama_url,
+                    'available_models': model_names,
+                    'configured_model': self.model,
+                    'cache_status': self.cache.get_status()
+                }
+            return {
+                'status': 'error',
+                'message': f"Ollama returned status {response.status_code}",
+                'ollama_url': self.ollama_url
+            }
+        except Exception as e:
+            return {
+                'status': 'unavailable',
+                'message': f"Cannot connect to Ollama: {str(e)}",
+                'ollama_url': self.ollama_url
+            }

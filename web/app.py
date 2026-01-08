@@ -41,7 +41,11 @@ from models.database import (
     # Daily Challenges
     get_or_create_daily_challenge, update_daily_challenge_progress,
     # Weekly Quests
-    get_or_create_weekly_quests, update_weekly_quest_progress
+    get_or_create_weekly_quests, update_weekly_quest_progress,
+    # FocusAI Learning Recommender
+    get_user_analytics_for_ai, get_last_session_context,
+    get_cached_ai_recommendation, cache_ai_recommendation,
+    get_recent_tasks, invalidate_ai_cache
 )
 
 app = Flask(__name__)
@@ -329,6 +333,13 @@ def api_log_session():
 
     # Check for newly unlocked achievements
     newly_unlocked = check_and_unlock_achievements()
+
+    # Invalidate AI caches (new session = new data)
+    try:
+        import requests
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+    except Exception:
+        pass  # Non-blocking, don't fail session log if cache invalidation fails
 
     return jsonify({
         'status': 'ok',
@@ -1242,6 +1253,543 @@ def api_ai_health():
     })
 
 
+# =============================================================================
+# FOCUSAI FULL LLM ANALYSIS ROUTES (Ollama-powered)
+# =============================================================================
+
+@app.route('/api/ai/morning-briefing')
+def api_ai_morning_briefing():
+    """FocusAI: Get morning briefing with AI predictions and recommendations.
+
+    Uses full LLM analysis of session history including notes from last 30 days.
+    Provides personalized daily plan, wellbeing check, and motivation.
+
+    Cache: 4 hours (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/morning-briefing',
+            timeout=60  # Long timeout for full LLM analysis
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI morning briefing unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/evening-review')
+def api_ai_evening_review():
+    """FocusAI: Get evening review with day analysis.
+
+    Analyzes today's sessions, compares to predictions, identifies patterns.
+    Provides insights from session notes and recommendations for tomorrow.
+
+    Cache: Until next day (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/evening-review',
+            timeout=45
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI evening review unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/integrated-insight')
+def api_ai_integrated_insight():
+    """FocusAI: Get cross-model integrated recommendations.
+
+    Combines insights from burnout, anomaly, quality, and schedule analysis.
+    Provides holistic view of productivity patterns and actionable advice.
+
+    Cache: 2 hours (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/integrated-insight',
+            timeout=90  # Longest timeout - combines multiple analyses
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI integrated insight unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/analyze-burnout')
+def api_ai_analyze_burnout():
+    """FocusAI: Full LLM burnout risk analysis with notes context.
+
+    Analyzes session patterns AND notes for burnout signals.
+    More comprehensive than rule-based /api/burnout-risk endpoint.
+
+    Cache: 6 hours (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/analyze-burnout',
+            timeout=45
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI burnout analysis unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/analyze-anomalies')
+def api_ai_analyze_anomalies():
+    """FocusAI: Full LLM anomaly detection with notes context.
+
+    Detects patterns and anomalies in user behavior using LLM analysis.
+    More intelligent than rule-based /api/anomalies endpoint.
+
+    Cache: 6 hours (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/analyze-anomalies',
+            timeout=45
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI anomaly analysis unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/analyze-quality', methods=['GET', 'POST'])
+def api_ai_analyze_quality():
+    """FocusAI: Full LLM quality prediction with context.
+
+    Query params or JSON body:
+        preset: Preset name (default: deep_work)
+        category: Category name (optional)
+
+    Cache: 30 minutes (invalidated on new session)
+    """
+    # Get parameters
+    if request.method == 'POST' and request.is_json:
+        data = request.get_json()
+        preset = data.get('preset', 'deep_work')
+        category = data.get('category')
+    else:
+        preset = request.args.get('preset', 'deep_work')
+        category = request.args.get('category')
+
+    try:
+        response = requests.post(
+            f'{ML_SERVICE_URL}/api/ai/analyze-quality',
+            json={'preset': preset, 'category': category},
+            timeout=45
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI quality analysis unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/optimal-schedule-ai')
+def api_ai_optimal_schedule_ai():
+    """FocusAI: Full LLM schedule optimization.
+
+    Query params:
+        sessions: Number of sessions to plan (default: 6)
+        day: Day of week (default: today)
+
+    Cache: 4 hours (invalidated on new session)
+    """
+    sessions = request.args.get('sessions', 6, type=int)
+    day = request.args.get('day', 'today')
+
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/optimal-schedule-ai',
+            params={'sessions': sessions, 'day': day},
+            timeout=45
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI optimal schedule unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/learning-v2')
+def api_ai_learning_v2():
+    """FocusAI: Enhanced learning recommendations (v2).
+
+    Full LLM analysis of session notes to identify learning patterns.
+
+    Cache: 6 hours (invalidated on new session)
+    """
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/learning-v2',
+            timeout=60
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI learning v2 unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'ai_available': False,
+        'fallback': True
+    }), 503
+
+
+@app.route('/api/ai/cache-status')
+def api_ai_cache_status():
+    """Get AI cache status from ML service."""
+    try:
+        response = requests.get(
+            f'{ML_SERVICE_URL}/api/ai/cache-status',
+            timeout=5
+        )
+        if response.ok:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI cache status unavailable: {e}")
+
+    return jsonify({
+        'error': 'AI service unavailable',
+        'total_cached': 0,
+        'valid': 0,
+        'caches': []
+    }), 503
+
+
+# =============================================================================
+# FOCUSAI LEARNING RECOMMENDER ROUTES
+# =============================================================================
+
+@app.route('/api/ai/learning-recommendations')
+def api_ai_learning_recommendations():
+    """FocusAI: Get comprehensive learning recommendations.
+
+    Analyzes user's session history, skills, and patterns to provide:
+    - Skill gaps identification
+    - Recommended topics to learn
+    - Category balance analysis
+    - Personalized tips
+    - Next session suggestion
+
+    Cache: 24 hours (invalidated after 5+ new sessions)
+    """
+    # Check cache first
+    cached = get_cached_ai_recommendation('learning')
+    if cached:
+        return jsonify({
+            **cached,
+            'from_cache': True
+        })
+
+    # Gather user analytics
+    try:
+        user_data = get_user_analytics_for_ai()
+
+        # Serialize datetime objects for JSON
+        for session in user_data.get('recent_sessions', []):
+            if 'created_at' in session:
+                session['created_at'] = session['created_at'].isoformat() if hasattr(session['created_at'], 'isoformat') else str(session['created_at'])
+            if '_id' in session:
+                session['_id'] = str(session['_id'])
+
+        response = requests.post(
+            f"{ML_SERVICE_URL}/api/ai/learning-recommendations",
+            json=user_data,
+            timeout=60
+        )
+        if response.status_code == 200:
+            result = response.json()
+            # Cache for 24 hours
+            cache_ai_recommendation('learning', result, hours=24)
+            return jsonify({
+                **result,
+                'from_cache': False
+            })
+        else:
+            print(f"AI learning recommendations failed: {response.status_code}")
+    except Exception as e:
+        print(f"AI learning recommendations error: {e}")
+
+    # Return fallback recommendations
+    return jsonify(_get_fallback_learning_recommendations())
+
+
+@app.route('/api/ai/next-session')
+def api_ai_next_session():
+    """FocusAI: Get quick suggestion for next session.
+
+    Optimized for timer start modal - provides:
+    - Suggested category
+    - Suggested topic/task
+    - Recommended preset
+    - Reason for suggestion
+
+    Cache: 15 minutes
+    """
+    # Check short-term cache
+    cached = get_cached_ai_recommendation('next_session')
+    if cached:
+        return jsonify({
+            **cached,
+            'from_cache': True
+        })
+
+    # Get context
+    from datetime import datetime
+    context = get_last_session_context()
+    today_stats = get_today_stats()
+
+    try:
+        response = requests.get(
+            f"{ML_SERVICE_URL}/api/ai/next-session-suggestion",
+            params={
+                'category': context.get('last_category', ''),
+                'task': context.get('last_task', ''),
+                'hour': datetime.now().hour,
+                'sessions': today_stats.get('sessions_count', 0)
+            },
+            timeout=15
+        )
+        if response.status_code == 200:
+            result = response.json()
+            # Cache for 15 minutes
+            cache_ai_recommendation('next_session', result, hours=0.25)
+            return jsonify({
+                **result,
+                'from_cache': False
+            })
+    except Exception as e:
+        print(f"AI next session suggestion error: {e}")
+
+    # Fallback suggestion
+    return jsonify(_get_fallback_session_suggestion())
+
+
+@app.route('/api/ai/extract-topics', methods=['POST'])
+def api_ai_extract_topics():
+    """FocusAI: Extract technologies and concepts from task history.
+
+    Analyzes task descriptions to identify:
+    - Technologies user works with
+    - Concepts being learned
+    - Areas of expertise
+    """
+    data = request.json
+    tasks = data.get('tasks') if data else None
+
+    # If no tasks provided, get from database
+    if not tasks:
+        tasks = get_recent_tasks(limit=100)
+
+    try:
+        response = requests.post(
+            f"{ML_SERVICE_URL}/api/ai/extract-topics",
+            json={'tasks': tasks},
+            timeout=30
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI extract topics error: {e}")
+
+    # Fallback - basic extraction
+    return jsonify({
+        'technologies': [],
+        'concepts': [],
+        'expertise_areas': [],
+        'fallback': True
+    })
+
+
+@app.route('/api/ai/analyze-patterns', methods=['POST'])
+def api_ai_analyze_patterns():
+    """FocusAI: Analyze productivity patterns.
+
+    Analyzes:
+    - Best productive hours
+    - Category preferences by time
+    - Consistency patterns
+    - Recommendations based on patterns
+    """
+    try:
+        # Gather productivity data
+        from datetime import datetime, timedelta
+        today_stats = get_today_stats()
+        weekly_stats = get_weekly_stats()
+        streak = get_streak_stats()
+
+        data = {
+            'today_stats': today_stats,
+            'weekly_stats': weekly_stats,
+            'streak_data': streak,
+            'current_hour': datetime.now().hour,
+            'day_of_week': datetime.now().weekday()
+        }
+
+        response = requests.post(
+            f"{ML_SERVICE_URL}/api/ai/analyze-patterns",
+            json=data,
+            timeout=30
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+    except Exception as e:
+        print(f"AI analyze patterns error: {e}")
+
+    return jsonify({
+        'productivity': {
+            'best_hours': [9, 10, 14, 15],
+            'worst_hours': [12, 13, 18],
+            'best_day': 'Tuesday',
+            'avg_sessions_per_day': 3.0,
+            'consistency_score': 0.5
+        },
+        'recommendations': ['Zkuste pracovat v dopolednich hodinach pro lepsi produktivitu'],
+        'warnings': [],
+        'fallback': True
+    })
+
+
+@app.route('/api/ai/invalidate-cache', methods=['POST'])
+def api_ai_invalidate_cache():
+    """Invalidate AI recommendation cache.
+
+    Query params:
+        type: Specific cache type to invalidate (learning, next_session, topics)
+              If not provided, invalidates all caches.
+    """
+    cache_type = request.args.get('type')
+    invalidate_ai_cache(cache_type)
+
+    return jsonify({
+        'status': 'ok',
+        'invalidated': cache_type or 'all'
+    })
+
+
+def _get_fallback_learning_recommendations():
+    """Get fallback learning recommendations when AI is unavailable."""
+    from datetime import datetime
+    return {
+        'skill_gaps': [],
+        'recommended_topics': [
+            {
+                'topic': 'Prozkoumat nove technologie',
+                'category': 'Learning',
+                'reason': 'Pravidelne uceni udrzuje znalosti aktualni',
+                'priority': 'medium',
+                'estimated_sessions': 5,
+                'related_to': None
+            }
+        ],
+        'category_balance': [],
+        'personalized_tips': [
+            'Zkuste stridavat ruzne typy prace pro lepsi produktivitu',
+            'Pravidelne prestavky pomahaji udrzet soustredeni'
+        ],
+        'next_session_suggestion': {
+            'category': 'Learning',
+            'topic': 'Osobni rozvoj',
+            'preset': 'standard',
+            'reason': 'Vzdy je dobry cas pro uceni',
+            'confidence': 0.3
+        },
+        'user_knowledge': {
+            'technologies': [],
+            'concepts': [],
+            'expertise_areas': []
+        },
+        'motivational_message': 'Kazda session te priblizuje k tvym cilum!',
+        'analysis_summary': 'Pro detailnejsi analyzu potrebuji vice dat o tvych sessions.',
+        'generated_at': datetime.now().isoformat(),
+        'confidence_score': 0.3,
+        'fallback': True
+    }
+
+
+def _get_fallback_session_suggestion():
+    """Get fallback session suggestion when AI is unavailable."""
+    from datetime import datetime
+    hour = datetime.now().hour
+
+    # Time-based suggestions
+    if 6 <= hour < 12:
+        # Morning - deep work
+        return {
+            'category': 'Coding',
+            'topic': 'Code review a refaktoring',
+            'preset': 'deep_work',
+            'reason': 'Rano je idealni cas pro narocnou praci - vyuzijte maximalni soustredeni',
+            'confidence': 0.5,
+            'fallback': True
+        }
+    elif 12 <= hour < 17:
+        # Afternoon - learning
+        return {
+            'category': 'Learning',
+            'topic': 'Dokumentace a tutorialy',
+            'preset': 'standard',
+            'reason': 'Odpoledne je vhodne pro uceni novych veci',
+            'confidence': 0.5,
+            'fallback': True
+        }
+    else:
+        # Evening - planning
+        return {
+            'category': 'Planning',
+            'topic': 'Planovani a organizace',
+            'preset': 'short_focus',
+            'reason': 'Vecer je dobry cas pro planovani dalsiho dne',
+            'confidence': 0.5,
+            'fallback': True
+        }
+
+
 # WebSocket Events
 @socketio.on('connect')
 def handle_connect():
@@ -1295,6 +1843,13 @@ def handle_timer_complete(data):
 
     # Check for newly unlocked achievements
     newly_unlocked = check_and_unlock_achievements()
+
+    # Invalidate AI caches (new session = new data)
+    try:
+        import requests
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+    except Exception:
+        pass  # Non-blocking
 
     emit('session_logged', {
         'status': 'ok',
