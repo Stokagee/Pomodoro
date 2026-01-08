@@ -1239,13 +1239,15 @@ let aiSuggestionVisible = true;
  */
 async function loadAISuggestion() {
     const panel = document.getElementById('ai-suggestion-panel');
+    const idle = document.getElementById('ai-idle');
     const loading = document.getElementById('ai-loading');
     const result = document.getElementById('ai-result');
     const error = document.getElementById('ai-error');
 
     if (!panel) return;
 
-    // Show loading state
+    // Hide idle state, show loading state
+    if (idle) idle.classList.add('hidden');
     loading.classList.remove('hidden');
     result.classList.add('hidden');
     error.classList.add('hidden');
@@ -1823,9 +1825,6 @@ document.addEventListener('DOMContentLoaded', () => {
             Notification.requestPermission();
         }
 
-        // Load FocusAI suggestion after a short delay for better UX
-        setTimeout(() => {
-            loadAISuggestion();
-        }, 1000);
+        // FocusAI suggestion is now loaded on-demand via button click
     }
 });

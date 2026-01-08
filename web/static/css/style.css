@@ -19,6 +19,11 @@
     --radius-lg: 20px;
 }
 
+/* Global utility class */
+.hidden {
+    display: none !important;
+}
+
 * {
     margin: 0;
     padding: 0;
@@ -2763,6 +2768,45 @@ body {
     min-height: 80px;
 }
 
+/* Idle State - Button to trigger suggestion */
+.ai-suggestion-idle {
+    text-align: center;
+    padding: 1.5rem;
+}
+
+.ai-idle-text {
+    color: var(--text-secondary);
+    margin-bottom: 1rem;
+    font-size: 0.95rem;
+}
+
+.btn-get-suggestion {
+    background: linear-gradient(135deg, var(--accent-purple), var(--accent-cyan));
+    color: white;
+    border: none;
+    padding: 0.75rem 1.5rem;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.btn-get-suggestion:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(147, 51, 234, 0.3);
+}
+
+.btn-get-suggestion:active {
+    transform: translateY(0);
+}
+
+.ai-suggestion-idle.hidden {
+    display: none;
+}
+
 /* Loading State */
 .ai-suggestion-loading {
     display: flex;
@@ -2771,6 +2815,10 @@ body {
     gap: 0.75rem;
     padding: 1.5rem;
     color: var(--text-muted);
+}
+
+.ai-suggestion-loading.hidden {
+    display: none;
 }
 
 .ai-spinner {
