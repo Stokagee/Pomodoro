@@ -601,15 +601,15 @@ def migrate_ai_cache(mongo_db, pg_conn):
 
             cursor.execute("""
                 INSERT INTO ai_cache
-                (cache_key, endpoint, response, expires_at)
+                (cache_key, cache_type, response, expires_at)
                 VALUES (%s, %s, %s, %s)
                 ON CONFLICT (cache_key) DO UPDATE SET
-                    endpoint = EXCLUDED.endpoint,
+                    cache_type = EXCLUDED.cache_type,
                     response = EXCLUDED.response,
                     expires_at = EXCLUDED.expires_at
             """, (
                 cache_key,
-                record.get('endpoint', ''),
+                record.get('cache_type', record.get('endpoint', '')),
                 json.dumps(response),
                 expires_at
             ))

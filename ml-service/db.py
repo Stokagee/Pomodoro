@@ -172,7 +172,7 @@ def _format_session(row: Dict) -> Dict:
         'task': row.get('task', ''),
         'duration_minutes': row.get('duration_minutes', 25),
         'completed': row.get('completed', True),
-        'productivity_rating': row.get('productivity_rating'),
+        'productivity_rating': float(row.get('productivity_rating')) if row.get('productivity_rating') is not None else None,
         'notes': row.get('notes', ''),
         'date': str(row.get('date', '')) if row.get('date') else '',
         'time': str(row.get('time', ''))[:5] if row.get('time') else '',
@@ -191,7 +191,7 @@ def get_user_profile() -> Dict:
     try:
         with get_cursor() as cur:
             cur.execute("""
-                SELECT user_id, xp, level, title, streak_freezes, created_at
+                SELECT user_id, xp, level, title, streak_freezes_available, created_at
                 FROM user_profile
                 WHERE user_id = 'default'
             """)
@@ -204,7 +204,7 @@ def get_user_profile() -> Dict:
                     'xp': row.get('xp', 0),
                     'title': row.get('title', 'Začátečník'),
                     'streak': 0,  # Calculate from sessions if needed
-                    'streak_freezes': row.get('streak_freezes', 1)
+                    'streak_freezes': row.get('streak_freezes_available', 1)
                 }
             return {'level': 1, 'total_xp': 0, 'xp': 0, 'streak': 0}
     except Exception as e:
@@ -277,7 +277,7 @@ def get_cached(cache_type: str, cache_key: str = None) -> Optional[Dict]:
                 cur.execute("""
                     SELECT response, created_at
                     FROM ai_cache
-                    WHERE endpoint = %s
+                    WHERE cache_type = %s
                       AND cache_key = %s
                       AND expires_at > NOW()
                 """, (cache_type, cache_key))
@@ -285,7 +285,7 @@ def get_cached(cache_type: str, cache_key: str = None) -> Optional[Dict]:
                 cur.execute("""
                     SELECT response, created_at
                     FROM ai_cache
-                    WHERE endpoint = %s
+                    WHERE cache_type = %s
                       AND (cache_key IS NULL OR cache_key = '')
                       AND expires_at > NOW()
                     ORDER BY created_at DESC
@@ -314,10 +314,10 @@ def set_cache(cache_type: str, data: Dict, cache_key: str = None, ttl_hours: flo
             full_key = f"{cache_type}:{cache_key or 'default'}"
 
             cur.execute("""
-                INSERT INTO ai_cache (cache_key, endpoint, response, expires_at)
+                INSERT INTO ai_cache (cache_key, cache_type, response, expires_at)
                 VALUES (%s, %s, %s, NOW() + INTERVAL '%s hours')
                 ON CONFLICT (cache_key) DO UPDATE SET
-                    endpoint = EXCLUDED.endpoint,
+                    cache_type = EXCLUDED.cache_type,
                     response = EXCLUDED.response,
                     expires_at = EXCLUDED.expires_at,
                     created_at = NOW()
@@ -364,7 +364,7 @@ def get_cache_status() -> Dict:
         with get_cursor() as cur:
             cur.execute("""
                 SELECT
-                    endpoint,
+                    cache_type,
                     cache_key,
                     created_at,
                     expires_at,
@@ -380,7 +380,7 @@ def get_cache_status() -> Dict:
                 'valid': valid_count,
                 'invalidated': len(rows) - valid_count,
                 'caches': [{
-                    'type': r['endpoint'],
+                    'type': r['cache_type'],
                     'key': r.get('cache_key'),
                     'generated_at': r['created_at'].isoformat() if r.get('created_at') else None,
                     'expires_at': r['expires_at'].isoformat() if r.get('expires_at') else None,
@@ -420,7 +420,7 @@ def semantic_search_sessions(query_embedding: List[float], limit: int = 10,
                 'category': row.get('category', 'Other'),
                 'task': row.get('task', ''),
                 'notes': row.get('notes', ''),
-                'productivity_rating': row.get('productivity_rating'),
+                'productivity_rating': float(row.get('productivity_rating')) if row.get('productivity_rating') is not None else None,
                 'similarity': round(row.get('similarity', 0), 4)
             } for row in results]
     except Exception as e:

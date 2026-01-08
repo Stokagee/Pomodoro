@@ -9,7 +9,7 @@ services:
         condition: service_healthy
     environment:
       - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
-      - ML_SERVICE_URL=http://ml-service:5001
+      - ML_SERVICE_URL=http://ml-service:5002
       - FLASK_ENV=development
     volumes:
       - ./web:/app
@@ -22,7 +22,7 @@ services:
     build: ./ml-service
     container_name: pomodoro-ml
     ports:
-      - "5001:5001"
+      - "5002:5002"
     depends_on:
       postgres:
         condition: service_healthy
@@ -31,10 +31,17 @@ services:
     environment:
       - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
       - FLASK_ENV=development
+      # AI Provider: 'ollama' (local) nebo 'cloud' (OpenAI/DeepSeek)
+      - AI_PROVIDER=cloud
+      # Ollama settings (local AI - fallback)
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=qwen2.5:14b
+      - OLLAMA_MODEL=qwen2.5:0.5b
       - OLLAMA_ENABLED=true
       - OLLAMA_TIMEOUT=180
+      # Cloud AI settings (OpenAI)
+      - AI_API_KEY=${AI_API_KEY}
+      - AI_API_URL=https://api.openai.com/v1
+      - AI_CLOUD_MODEL=gpt-4o-mini
       - EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
     volumes:
       - ./ml-service:/app
@@ -93,6 +100,84 @@ services:
     networks:
       - pomodoro-network
 
+  # =============================================================================
+  # MONITORING STACK
+  # =============================================================================
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: pomodoro-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=15d'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - pomodoro-web
+      - ml-service
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: pomodoro-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_AUTH_API_KEY_ENABLED=true
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: pomodoro-postgres-exporter
+    ports:
+      - "9187:9187"
+    environment:
+      - DATA_SOURCE_NAME=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: pomodoro-cadvisor
+    ports:
+      - "8080:8080"
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    privileged: true
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
 networks:
   pomodoro-network:
     driver: bridge
@@ -102,3 +187,5 @@ volumes:
   pgadmin_data:
   ollama_data:
   embedding_cache:
+  prometheus_data:
+  grafana_data:

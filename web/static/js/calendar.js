@@ -249,7 +249,7 @@ class PomodoroCalendar {
             return {
                 predicted_sessions: null,
                 recommended_focus: null,
-                tip: 'ML service není dostupný. Zkontrolujte, zda běží na portu 5001.',
+                tip: 'ML service není dostupný. Zkontrolujte, zda běží na portu 5002.',
                 productivity_trend: null
             };
         }

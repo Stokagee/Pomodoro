@@ -96,7 +96,7 @@ class CacheManager:
 
 
 class AIAnalyzer:
-    """Full LLM-based analyzer using Ollama."""
+    """Full LLM-based analyzer using Ollama or Cloud AI (DeepSeek/OpenAI)."""
 
     def __init__(self, categories: List[str] = None):
         """Initialize AI Analyzer.
@@ -105,10 +105,24 @@ class AIAnalyzer:
             categories: User's configured categories (from config.json)
         """
         self.categories = categories or []
+
+        # AI Provider selection: 'ollama' (default) or 'cloud'
+        self.ai_provider = os.getenv('AI_PROVIDER', 'ollama').lower()
+
+        # Ollama settings (local)
         self.ollama_url = os.getenv('OLLAMA_URL', 'http://ollama:11434')
-        self.model = os.getenv('OLLAMA_MODEL', 'mistral:7b')
+        self.ollama_model = os.getenv('OLLAMA_MODEL', 'qwen2.5:0.5b')
+
+        # Cloud AI settings (DeepSeek, OpenAI, etc.)
+        self.cloud_api_key = os.getenv('AI_API_KEY', '')
+        self.cloud_api_url = os.getenv('AI_API_URL', 'https://api.deepseek.com/v1')
+        self.cloud_model = os.getenv('AI_CLOUD_MODEL', 'deepseek-chat')
+
+        # Backward compatibility: use OLLAMA_MODEL if AI_PROVIDER is ollama
+        self.model = self.cloud_model if self.ai_provider == 'cloud' else self.ollama_model
+
         self.enabled = os.getenv('OLLAMA_ENABLED', 'true').lower() == 'true'
-        self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '60'))
+        self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
 
         self.cache = CacheManager()
 
@@ -145,7 +159,7 @@ class AIAnalyzer:
         self.format_category_distribution = format_category_distribution
         self._get_master_prompt_with_categories = get_master_prompt_with_categories
 
-        logger.info(f"AIAnalyzer initialized: enabled={self.enabled}, model={self.model}, categories={len(self.categories)}")
+        logger.info(f"AIAnalyzer initialized: provider={self.ai_provider}, model={self.model}, enabled={self.enabled}, categories={len(self.categories)}")
 
     def update_categories(self, categories: List[str]):
         """Update categories at runtime (called when web service sends new categories)."""
@@ -248,8 +262,57 @@ class AIAnalyzer:
             'top_category': top_category
         }
 
+    def _call_llm(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Route LLM call to appropriate provider (Ollama or Cloud)."""
+        if self.ai_provider == 'cloud':
+            return self._call_cloud_api(prompt, system_prompt)
+        else:
+            return self._call_ollama(prompt, system_prompt)
+
+    def _call_cloud_api(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Make a call to Cloud AI API (DeepSeek, OpenAI-compatible)."""
+        if not self.cloud_api_key:
+            logger.warning("Cloud AI API key not configured (AI_API_KEY)")
+            return None
+
+        try:
+            import requests
+
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            headers = {
+                "Authorization": f"Bearer {self.cloud_api_key}",
+                "Content-Type": "application/json"
+            }
+
+            response = requests.post(
+                f"{self.cloud_api_url}/chat/completions",
+                headers=headers,
+                json={
+                    "model": self.cloud_model,
+                    "messages": messages,
+                    "temperature": 0.7,
+                    "max_tokens": 2000
+                },
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                return result.get('choices', [{}])[0].get('message', {}).get('content', '')
+            else:
+                logger.error(f"Cloud AI returned status {response.status_code}: {response.text}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Cloud AI call error: {e}")
+            return None
+
     def _call_ollama(self, prompt: str, system_prompt: str = None) -> Optional[str]:
-        """Make a call to Ollama API."""
+        """Make a call to Ollama API (local)."""
         if not self.enabled:
             logger.warning("Ollama is disabled")
             return None
@@ -265,7 +328,7 @@ class AIAnalyzer:
             response = requests.post(
                 f"{self.ollama_url}/api/chat",
                 json={
-                    "model": self.model,
+                    "model": self.ollama_model,
                     "messages": messages,
                     "stream": False,
                     "options": {
@@ -464,7 +527,7 @@ class AIAnalyzer:
         if rag_context:
             prompt = f"{rag_context}\n\n{prompt}"
 
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -506,7 +569,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['evening'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -558,7 +621,7 @@ class AIAnalyzer:
         if rag_context:
             prompt = f"{rag_context}\n\n{prompt}"
 
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -591,7 +654,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['anomaly'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -637,7 +700,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['quality'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -668,7 +731,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['schedule'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -711,7 +774,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['integrated'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -756,7 +819,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['learning'].format(**context)
-        response = self._call_ollama(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt())
         result = self._parse_json_response(response)
 
         if result:
@@ -768,37 +831,96 @@ class AIAnalyzer:
         return self._create_fallback('learning')
 
     def health_check(self) -> Dict:
-        """Check if Ollama is available."""
+        """Check if AI provider is available (Ollama or Cloud)."""
+        import requests
+
+        base_info = {
+            'ai_provider': self.ai_provider,
+            'configured_model': self.model,
+            'cache_status': self.cache.get_status()
+        }
+
+        # Cloud AI provider
+        if self.ai_provider == 'cloud':
+            if not self.cloud_api_key:
+                return {
+                    **base_info,
+                    'status': 'not_configured',
+                    'message': 'Cloud AI API key not set (AI_API_KEY)',
+                    'cloud_api_url': self.cloud_api_url
+                }
+
+            try:
+                # Test cloud API with a minimal request
+                headers = {
+                    "Authorization": f"Bearer {self.cloud_api_key}",
+                    "Content-Type": "application/json"
+                }
+                response = requests.post(
+                    f"{self.cloud_api_url}/chat/completions",
+                    headers=headers,
+                    json={
+                        "model": self.cloud_model,
+                        "messages": [{"role": "user", "content": "test"}],
+                        "max_tokens": 5
+                    },
+                    timeout=10
+                )
+
+                if response.status_code == 200:
+                    return {
+                        **base_info,
+                        'status': 'healthy',
+                        'message': f"Cloud AI ({self.cloud_model}) is available.",
+                        'cloud_api_url': self.cloud_api_url
+                    }
+                else:
+                    return {
+                        **base_info,
+                        'status': 'error',
+                        'message': f"Cloud AI returned status {response.status_code}",
+                        'cloud_api_url': self.cloud_api_url
+                    }
+            except Exception as e:
+                return {
+                    **base_info,
+                    'status': 'unavailable',
+                    'message': f"Cannot connect to Cloud AI: {str(e)}",
+                    'cloud_api_url': self.cloud_api_url
+                }
+
+        # Ollama provider (default)
         if not self.enabled:
             return {
+                **base_info,
                 'status': 'disabled',
                 'message': 'Ollama is disabled via OLLAMA_ENABLED=false',
                 'ollama_url': self.ollama_url
             }
 
         try:
-            import requests
             response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
             if response.status_code == 200:
                 models = response.json().get('models', [])
                 model_names = [m.get('name', '') for m in models]
-                has_model = any(self.model in name for name in model_names)
+                has_model = any(self.ollama_model in name for name in model_names)
 
                 return {
+                    **base_info,
                     'status': 'healthy' if has_model else 'model_missing',
-                    'message': f"Ollama running. Model {self.model} {'found' if has_model else 'not found'}.",
+                    'message': f"Ollama is running. Model {self.ollama_model} {'found' if has_model else 'not found'}.",
                     'ollama_url': self.ollama_url,
-                    'available_models': model_names,
-                    'configured_model': self.model,
-                    'cache_status': self.cache.get_status()
+                    'available_models': model_names
                 }
             return {
+                **base_info,
                 'status': 'error',
                 'message': f"Ollama returned status {response.status_code}",
                 'ollama_url': self.ollama_url
             }
         except Exception as e:
             return {
+                **base_info,
                 'status': 'unavailable',
                 'message': f"Cannot connect to Ollama: {str(e)}",
                 'ollama_url': self.ollama_url

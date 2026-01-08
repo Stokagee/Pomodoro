@@ -1553,6 +1553,61 @@ function showStartDayError() {
 }
 
 /**
+ * Format briefing value - handles both strings and objects
+ * @param {*} value - The value to format (string or object)
+ * @param {string} type - Type of value: 'yesterday', 'prediction', 'recommendation', 'wellbeing', 'generic'
+ * @param {string} fallback - Fallback text if value is empty
+ * @returns {string} Formatted text
+ */
+function formatBriefingValue(value, type = 'generic', fallback = '-') {
+    if (!value) return fallback;
+    if (typeof value === 'string') return value;
+
+    // yesterday_summary: { sessions, rating, highlight }
+    if (type === 'yesterday' && typeof value === 'object') {
+        const parts = [];
+        if (value.sessions !== undefined) parts.push(`${value.sessions} sessions`);
+        if (value.rating !== undefined) parts.push(`${value.rating}%`);
+        if (value.highlight) parts.push(value.highlight);
+        return parts.length > 0 ? parts.join(' - ') : fallback;
+    }
+
+    // today_prediction: { expected_sessions, expected_productivity, confidence, reasoning }
+    if (type === 'prediction' && typeof value === 'object') {
+        const parts = [];
+        if (value.expected_sessions !== undefined) {
+            parts.push(`Očekáváno ${value.expected_sessions} sessions`);
+        }
+        if (value.expected_productivity !== undefined) {
+            parts.push(`${value.expected_productivity}% produktivita`);
+        }
+        if (value.reasoning) parts.push(value.reasoning);
+        return parts.length > 0 ? parts.join(' - ') : fallback;
+    }
+
+    // recommendation/focus
+    if (type === 'recommendation' && typeof value === 'object') {
+        return value.focus || value.message || value.text || value.suggestion || fallback;
+    }
+
+    // wellbeing: { status, tip, score }
+    if (type === 'wellbeing' && typeof value === 'object') {
+        const parts = [];
+        if (value.status) parts.push(value.status);
+        if (value.tip) parts.push(value.tip);
+        if (value.score !== undefined) parts.push(`Score: ${value.score}`);
+        return parts.length > 0 ? parts.join(' - ') : fallback;
+    }
+
+    // Generic fallback - try common properties
+    if (typeof value === 'object') {
+        return value.message || value.text || value.highlight || value.summary || fallback;
+    }
+
+    return fallback;
+}
+
+/**
  * Render the morning briefing from AI
  */
 function renderMorningBriefing(briefing) {
@@ -1577,18 +1632,34 @@ function renderMorningBriefing(briefing) {
         return;
     }
 
-    // Structured response from AIAnalyzer
+    // Structured response from AIAnalyzer - use formatBriefingValue to handle objects
     if (yesterdayEl) {
-        yesterdayEl.textContent = briefing.yesterday_summary || briefing.analysis?.yesterday || '-';
+        yesterdayEl.textContent = formatBriefingValue(
+            briefing.yesterday_summary || briefing.analysis?.yesterday,
+            'yesterday',
+            'Včerejší analýza není dostupná'
+        );
     }
     if (predictionEl) {
-        predictionEl.textContent = briefing.today_prediction || briefing.analysis?.prediction || '-';
+        predictionEl.textContent = formatBriefingValue(
+            briefing.today_prediction || briefing.analysis?.prediction,
+            'prediction',
+            'Predikce není k dispozici'
+        );
     }
     if (recommendationEl) {
-        recommendationEl.textContent = briefing.recommendation || briefing.analysis?.focus || '-';
+        recommendationEl.textContent = formatBriefingValue(
+            briefing.recommendation || briefing.analysis?.focus,
+            'recommendation',
+            'Vyber si kategorie dle vlastního uvážení'
+        );
     }
     if (wellbeingEl) {
-        wellbeingEl.textContent = briefing.wellbeing || briefing.analysis?.wellbeing || 'Držím ti palce!';
+        wellbeingEl.textContent = formatBriefingValue(
+            briefing.wellbeing || briefing.analysis?.wellbeing,
+            'wellbeing',
+            'Držím ti palce!'
+        );
     }
 }
 

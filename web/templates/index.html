@@ -239,7 +239,13 @@
             <button class="ai-close-btn" onclick="hideAISuggestion()" title="Zavřít">×</button>
         </div>
         <div class="ai-suggestion-content">
-            <div class="ai-suggestion-loading" id="ai-loading">
+            <div class="ai-suggestion-idle" id="ai-idle">
+                <p class="ai-idle-text">Zjisti, na čem bys měl/a pracovat</p>
+                <button class="btn-get-suggestion" onclick="loadAISuggestion()">
+                    <span>🧠</span> Získat doporučení
+                </button>
+            </div>
+            <div class="ai-suggestion-loading hidden" id="ai-loading">
                 <span class="ai-spinner"></span>
                 <span>Analyzuji tvoje data...</span>
             </div>

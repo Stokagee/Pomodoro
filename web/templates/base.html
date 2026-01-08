@@ -23,6 +23,7 @@
             <a href="/stats" class="nav-link {% if request.endpoint == 'stats' %}active{% endif %}">Statistiky</a>
             <a href="/achievements" class="nav-link {% if request.endpoint == 'achievements' %}active{% endif %}">Achievements</a>
             <a href="/insights" class="nav-link {% if request.endpoint == 'insights' %}active{% endif %}">ML Insights</a>
+            <a href="/settings" class="nav-link {% if request.endpoint == 'settings' %}active{% endif %}">Nastavení</a>
         </div>
         <div class="nav-stats">
             <span id="nav-sessions">{{ today_stats.sessions }}/{{ config.daily_goal_sessions }}</span>

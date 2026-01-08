@@ -10,3 +10,5 @@ requests>=2.31.0
 pydantic>=2.0.0
 sentence-transformers>=2.2.0
 torch>=2.0.0
+prometheus-client>=0.20.0
+prometheus-flask-exporter>=0.23.0

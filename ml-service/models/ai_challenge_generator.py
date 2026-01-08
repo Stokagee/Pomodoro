@@ -107,55 +107,95 @@ class AIChallengeGenerator:
         "Vydrz! Vysledky prijdou.",
     ]
 
-    def __init__(self):
-        """Initialize the AI Challenge Generator"""
+    def __init__(self, categories: List[str] = None):
+        """Initialize the AI Challenge Generator
+
+        Args:
+            categories: User's configured categories (from config.json)
+        """
+        # AI Provider selection: 'ollama' (default) or 'cloud'
+        self.ai_provider = os.getenv('AI_PROVIDER', 'ollama').lower()
+
+        # Ollama settings (local)
         self.ollama_url = os.getenv('OLLAMA_URL', 'http://ollama:11434')
-        self.model = os.getenv('OLLAMA_MODEL', 'mistral:7b')
+        self.ollama_model = os.getenv('OLLAMA_MODEL', 'qwen2.5:0.5b')
+
+        # Cloud AI settings (DeepSeek, OpenAI, etc.)
+        self.cloud_api_key = os.getenv('AI_API_KEY', '')
+        self.cloud_api_url = os.getenv('AI_API_URL', 'https://api.deepseek.com/v1')
+        self.cloud_model = os.getenv('AI_CLOUD_MODEL', 'deepseek-chat')
+
+        # Backward compatibility
+        self.model = self.cloud_model if self.ai_provider == 'cloud' else self.ollama_model
         self.enabled = os.getenv('OLLAMA_ENABLED', 'true').lower() == 'true'
-        self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '30'))
+        self.timeout = int(os.getenv('OLLAMA_TIMEOUT', '180'))
 
         # Cache for generated content
         self._cache: Dict[str, Any] = {}
         self._cache_expiry: Dict[str, datetime] = {}
 
-        logger.info(f"AIChallengeGenerator initialized: enabled={self.enabled}, model={self.model}")
+        # User's categories for AI suggestions
+        self.categories = categories or []
+
+        logger.info(f"AIChallengeGenerator initialized: provider={self.ai_provider}, model={self.model}")
+
+    def update_categories(self, categories: List[str]):
+        """Update categories at runtime (called when web service sends new categories).
+
+        Args:
+            categories: List of category names from config
+        """
+        self.categories = categories or []
+        logger.info(f"AIChallengeGenerator categories updated: {len(self.categories)} categories")
 
     def health_check(self) -> Dict[str, Any]:
-        """Check if Ollama is available and responsive"""
+        """Check if AI provider is available (Ollama or Cloud)"""
+        import requests
+
+        base_info = {
+            "ai_provider": self.ai_provider,
+            "configured_model": self.model
+        }
+
+        # Cloud AI provider
+        if self.ai_provider == 'cloud':
+            if not self.cloud_api_key:
+                return {**base_info, "status": "not_configured", "message": "Cloud AI API key not set"}
+
+            try:
+                headers = {"Authorization": f"Bearer {self.cloud_api_key}", "Content-Type": "application/json"}
+                response = requests.post(
+                    f"{self.cloud_api_url}/chat/completions",
+                    headers=headers,
+                    json={"model": self.cloud_model, "messages": [{"role": "user", "content": "test"}], "max_tokens": 5},
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    return {**base_info, "status": "healthy", "message": f"Cloud AI ({self.cloud_model}) is available."}
+                return {**base_info, "status": "error", "message": f"Cloud AI returned {response.status_code}"}
+            except Exception as e:
+                return {**base_info, "status": "unavailable", "message": str(e)}
+
+        # Ollama provider (default)
         if not self.enabled:
-            return {
-                "status": "disabled",
-                "message": "Ollama is disabled via OLLAMA_ENABLED=false",
-                "ollama_url": self.ollama_url
-            }
+            return {**base_info, "status": "disabled", "message": "Ollama is disabled", "ollama_url": self.ollama_url}
 
         try:
-            import requests
             response = requests.get(f"{self.ollama_url}/api/tags", timeout=5)
             if response.status_code == 200:
                 models = response.json().get('models', [])
                 model_names = [m.get('name', '') for m in models]
-                has_model = any(self.model in name for name in model_names)
-
+                has_model = any(self.ollama_model in name for name in model_names)
                 return {
+                    **base_info,
                     "status": "healthy" if has_model else "model_missing",
-                    "message": f"Ollama is running. Model {self.model} {'found' if has_model else 'not found'}.",
+                    "message": f"Ollama is running. Model {self.ollama_model} {'found' if has_model else 'not found'}.",
                     "ollama_url": self.ollama_url,
-                    "available_models": model_names,
-                    "configured_model": self.model
+                    "available_models": model_names
                 }
-            else:
-                return {
-                    "status": "error",
-                    "message": f"Ollama returned status {response.status_code}",
-                    "ollama_url": self.ollama_url
-                }
+            return {**base_info, "status": "error", "message": f"Ollama returned {response.status_code}", "ollama_url": self.ollama_url}
         except Exception as e:
-            return {
-                "status": "unavailable",
-                "message": f"Cannot connect to Ollama: {str(e)}",
-                "ollama_url": self.ollama_url
-            }
+            return {**base_info, "status": "unavailable", "message": str(e), "ollama_url": self.ollama_url}
 
     def _get_cache_key(self, prefix: str, context: Dict) -> str:
         """Generate cache key from context"""
@@ -168,8 +208,42 @@ class AIChallengeGenerator:
             return False
         return datetime.now() < self._cache_expiry[key]
 
+    def _call_llm(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Route LLM call to appropriate provider (Ollama or Cloud)."""
+        if self.ai_provider == 'cloud':
+            return self._call_cloud_api(prompt, system_prompt)
+        return self._call_ollama(prompt, system_prompt)
+
+    def _call_cloud_api(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        """Make a call to Cloud AI API (DeepSeek, OpenAI-compatible)."""
+        if not self.cloud_api_key:
+            logger.warning("Cloud AI API key not configured")
+            return None
+
+        try:
+            import requests
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+
+            response = requests.post(
+                f"{self.cloud_api_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self.cloud_api_key}", "Content-Type": "application/json"},
+                json={"model": self.cloud_model, "messages": messages, "temperature": 0.7, "max_tokens": 500},
+                timeout=self.timeout
+            )
+
+            if response.status_code == 200:
+                return response.json().get('choices', [{}])[0].get('message', {}).get('content', '')
+            logger.error(f"Cloud AI error: {response.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"Cloud AI call failed: {e}")
+            return None
+
     def _call_ollama(self, prompt: str, system_prompt: str = None) -> Optional[str]:
-        """Make a call to Ollama API"""
+        """Make a call to Ollama API (local)"""
         if not self.enabled:
             return None
 
@@ -184,7 +258,7 @@ class AIChallengeGenerator:
             response = requests.post(
                 f"{self.ollama_url}/api/chat",
                 json={
-                    "model": self.model,
+                    "model": self.ollama_model,
                     "messages": messages,
                     "stream": False,
                     "options": {
@@ -291,7 +365,7 @@ Vrat JSON v tomto formatu:
     "category": null
 }}"""
 
-        response = self._call_ollama(prompt, system_prompt)
+        response = self._call_llm(prompt, system_prompt)
         challenge = self._parse_json_response(response)
 
         if challenge:
@@ -390,7 +464,7 @@ Vrat JSON pole v tomto formatu:
     {{"id": "wq_3", "title": "Nazev", "description": "Popis", "target": 7, "xp_reward": 200, "category": null}}
 ]"""
 
-        response = self._call_ollama(prompt, system_prompt)
+        response = self._call_llm(prompt, system_prompt)
 
         if not response:
             return None
@@ -455,7 +529,7 @@ Kontext:
 
 Odpovez pouze jednou motivacni vetou."""
 
-        response = self._call_ollama(prompt, system_prompt)
+        response = self._call_llm(prompt, system_prompt)
         if response:
             # Clean up response
             response = response.strip().strip('"').strip("'")
@@ -656,7 +730,7 @@ Vrat JSON v tomto PRESNEM formatu:
     "confidence_score": 0.85
 }}"""
 
-        response = self._call_ollama(prompt, self.FOCUSAI_SYSTEM_PROMPT)
+        response = self._call_llm(prompt, self.FOCUSAI_SYSTEM_PROMPT)
         result = self._parse_json_response(response)
 
         if result:
@@ -709,8 +783,13 @@ Vrat JSON v tomto PRESNEM formatu:
         return fallback
 
     def _generate_ai_session_suggestion(self, context: Dict) -> Optional[Dict]:
-        """Generate quick session suggestion using Ollama"""
-        system_prompt = """Jsi FocusAI - doporucujes dalsi ukol pro Pomodoro timer.
+        """Generate quick session suggestion using AI (Ollama or Cloud API)"""
+        # Build category list string - use user's categories or fallback
+        categories_str = ", ".join(self.categories) if self.categories else "Coding, Learning, Other"
+
+        system_prompt = f"""Jsi FocusAI - doporucujes dalsi ukol pro Pomodoro timer.
+KRITICKE PRAVIDLO: Kategorie MUSI byt PRESNE jedna z tohoto seznamu: {categories_str}
+NIKDY nevymyslej vlastni kategorie! Pouzij POUZE kategorie ze seznamu vyse.
 Odpovez POUZE JSON objektem. Zadny jiny text."""
 
         hour = context.get('time_of_day', 12)
@@ -724,34 +803,65 @@ Kontext:
 - Posledni ukol: {context.get('last_task', 'nezname')}
 - Dnesni sessions: {context.get('sessions_today', 0)}
 
+POVOLENE KATEGORIE (vyber PRESNE jednu z tohoto seznamu): {categories_str}
+
 Pravidla:
 1. {time_context} doporucuj {self._get_time_recommendation(hour)}
-2. Pokud uzivatel delal hodne jedne kategorie, navrhni jinou
+2. Pokud uzivatel delal hodne jedne kategorie, navrhni jinou Z POVOLENEHO SEZNAMU
 3. Konkretni tema, ne obecne
+4. KATEGORIE MUSI BYT PRESNE JEDNA Z: {categories_str}
 
 Vrat JSON:
 {{
-    "category": "Coding",
-    "topic": "Konkretni tema",
+    "category": "<jedna z: {categories_str}>",
+    "topic": "Konkretni tema cesky",
     "preset": "deep_work",
     "reason": "Kratky duvod cesky",
     "confidence": 0.8
 }}"""
 
-        # Use shorter timeout for quick suggestions
-        original_timeout = self.timeout
-        self.timeout = 15  # 15 seconds max
-
-        try:
-            response = self._call_ollama(prompt, system_prompt)
-            result = self._parse_json_response(response)
-            if result and 'topic' in result:
-                result['ai_generated'] = True
-                return result
-        finally:
-            self.timeout = original_timeout
+        response = self._call_llm(prompt, system_prompt)
+        result = self._parse_json_response(response)
+        if result and 'topic' in result:
+            # Validate and fix category if needed
+            result = self._validate_and_fix_category(result)
+            result['ai_generated'] = True
+            return result
 
         return None
+
+    def _validate_and_fix_category(self, result: Dict) -> Dict:
+        """Validate AI response category and fix if necessary.
+
+        Args:
+            result: AI response dict with 'category' field
+
+        Returns:
+            Result with validated/corrected category
+        """
+        suggested_category = result.get('category', '')
+
+        if self.categories:
+            # Check exact match
+            if suggested_category in self.categories:
+                return result
+
+            # Check case-insensitive match
+            for cat in self.categories:
+                if cat.lower() == suggested_category.lower():
+                    result['category'] = cat
+                    return result
+
+            # Fallback: use 'Other' if available, otherwise first category
+            if 'Other' in self.categories:
+                result['category'] = 'Other'
+            else:
+                result['category'] = self.categories[0]
+
+            result['category_corrected'] = True
+            logger.warning(f"AI suggested invalid category '{suggested_category}', corrected to '{result['category']}'")
+
+        return result
 
     def _get_time_recommendation(self, hour: int) -> str:
         """Get recommendation based on time of day"""
@@ -827,7 +937,7 @@ Vrat JSON:
     "expertise_areas": ["frontend", "backend"]
 }}"""
 
-        response = self._call_ollama(prompt, system_prompt)
+        response = self._call_llm(prompt, system_prompt)
         return self._parse_json_response(response)
 
     def _simple_topic_extraction(self, tasks: List[Dict]) -> Dict:

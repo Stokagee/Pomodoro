@@ -1396,7 +1396,7 @@ def check_and_unlock_achievements():
 
 
 def get_all_achievements():
-    """Get all achievements with progress."""
+    """Get all achievements with progress, merged with definitions."""
     with get_cursor() as cur:
         cur.execute("""
             SELECT id, achievement_id, progress, unlocked, unlocked_at, notified
@@ -1409,6 +1409,24 @@ def get_all_achievements():
         a['_id'] = str(a['id'])
         if a.get('unlocked_at'):
             a['unlocked_at'] = a['unlocked_at'].isoformat()
+
+        # Merge definition data
+        definition = ACHIEVEMENTS_DEFINITIONS.get(a['achievement_id'], {})
+        a['name'] = definition.get('name', a['achievement_id'])
+        a['description'] = definition.get('description', '')
+        a['icon'] = definition.get('icon', '🏆')
+        a['target'] = definition.get('target', 1)
+        a['points'] = definition.get('xp', 0)
+
+        # Calculate percentage
+        target = a['target']
+        a['percentage'] = min(100, round((a['progress'] / target) * 100)) if target > 0 else 0
+
+        # Calculate rarity from XP
+        a['rarity'] = _get_rarity_from_xp(a['points'])
+
+        # Default category (could be enhanced later)
+        a['category'] = 'general'
 
     return achievements
 
@@ -1430,8 +1448,20 @@ def update_achievement_progress(achievement_id, progress, unlocked=False):
         """, (achievement_id, progress, unlocked, now if unlocked else None, now, now))
 
 
+def _get_rarity_from_xp(xp):
+    """Determine achievement rarity based on XP value."""
+    if xp <= 100:
+        return 'common'
+    elif xp <= 200:
+        return 'rare'
+    elif xp <= 500:
+        return 'epic'
+    else:
+        return 'legendary'
+
+
 def get_achievements_summary():
-    """Get achievements summary."""
+    """Get achievements summary including percentage, points, and rarity breakdown."""
     with get_cursor() as cur:
         cur.execute("""
             SELECT
@@ -1442,10 +1472,43 @@ def get_achievements_summary():
         """)
         result = cur.fetchone()
 
+        # Get unlocked achievement IDs to calculate points
+        cur.execute("SELECT achievement_id FROM achievements WHERE unlocked = TRUE")
+        unlocked_ids = [row['achievement_id'] for row in cur.fetchall()]
+
+    total = result['total']
+    unlocked = result['unlocked']
+
+    # Calculate percentage
+    percentage = (unlocked / total * 100) if total > 0 else 0
+
+    # Calculate points from unlocked achievements
+    points = sum(
+        ACHIEVEMENTS_DEFINITIONS.get(aid, {}).get('xp', 0)
+        for aid in unlocked_ids
+    )
+
+    # Calculate rarity breakdown
+    by_rarity = {
+        'common': {'total': 0, 'unlocked': 0},
+        'rare': {'total': 0, 'unlocked': 0},
+        'epic': {'total': 0, 'unlocked': 0},
+        'legendary': {'total': 0, 'unlocked': 0}
+    }
+
+    for aid, definition in ACHIEVEMENTS_DEFINITIONS.items():
+        rarity = _get_rarity_from_xp(definition.get('xp', 0))
+        by_rarity[rarity]['total'] += 1
+        if aid in unlocked_ids:
+            by_rarity[rarity]['unlocked'] += 1
+
     return {
-        'total': result['total'],
-        'unlocked': result['unlocked'],
-        'avg_progress': round(result['avg_progress'] or 0, 1)
+        'total': total,
+        'unlocked': unlocked,
+        'avg_progress': round(result['avg_progress'] or 0, 1),
+        'percentage': round(percentage, 1),
+        'points': points,
+        'by_rarity': by_rarity
     }
 
 
@@ -1915,3 +1978,59 @@ def get_sessions_with_notes(days: int = 30) -> list:
             s['time'] = str(s['time'])
 
     return sessions
+
+
+def rename_category_in_sessions(old_name: str, new_name: str) -> int:
+    """Update all sessions with old category name to new name.
+
+    Also updates related tables (category_skills, daily_focus).
+
+    Args:
+        old_name: Current category name
+        new_name: New category name
+
+    Returns:
+        Number of sessions updated
+    """
+    total_updated = 0
+
+    with get_cursor() as cur:
+        # Update sessions table
+        cur.execute("""
+            UPDATE sessions
+            SET category = %s, updated_at = NOW()
+            WHERE category = %s
+        """, (new_name, old_name))
+        total_updated = cur.rowcount
+
+        # Update category_skills table
+        cur.execute("""
+            UPDATE category_skills
+            SET category = %s, updated_at = NOW()
+            WHERE category = %s
+        """, (new_name, old_name))
+
+        # Update daily_focus themes (JSONB array)
+        # This updates any theme entries that match old_name
+        cur.execute("""
+            UPDATE daily_focus
+            SET themes = (
+                SELECT COALESCE(
+                    jsonb_agg(
+                        CASE
+                            WHEN elem->>'theme' = %s
+                            THEN jsonb_set(elem, '{theme}', to_jsonb(%s::text))
+                            ELSE elem
+                        END
+                    ),
+                    '[]'::jsonb
+                )
+                FROM jsonb_array_elements(COALESCE(themes, '[]'::jsonb)) AS elem
+            ),
+            updated_at = NOW()
+            WHERE themes::text LIKE %s
+        """, (old_name, new_name, f'%"{old_name}"%'))
+
+        logger.info(f"Renamed category '{old_name}' to '{new_name}': {total_updated} sessions updated")
+
+    return total_updated

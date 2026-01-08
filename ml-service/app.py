@@ -3,9 +3,12 @@ Pomodoro ML Service - Flask API for productivity analysis
 """
 
 import os
-from flask import Flask, jsonify, request
+import time
+from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
+from prometheus_flask_exporter import PrometheusMetrics
+from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 
 from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor, BurnoutPredictor, FocusOptimizer, SessionQualityPredictor, PatternAnomalyDetector
 from models.ai_challenge_generator import AIChallengeGenerator
@@ -19,6 +22,80 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
+
+# =============================================================================
+# PROMETHEUS METRICS
+# =============================================================================
+metrics = PrometheusMetrics(app, path=None)  # Disable automatic /metrics endpoint
+
+@app.route('/metrics')
+def prometheus_metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+# Application info
+ml_info = Info('pomodoro_ml', 'Pomodoro ML Service Information')
+ml_info.info({
+    'version': '1.0',
+    'service': 'pomodoro-ml',
+    'ollama_model': os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')
+})
+
+# Custom ML metrics
+PREDICTION_REQUESTS = Counter(
+    'ml_prediction_requests_total',
+    'Total prediction requests',
+    ['prediction_type']
+)
+
+PREDICTION_ERRORS = Counter(
+    'ml_prediction_errors_total',
+    'Total prediction errors',
+    ['prediction_type', 'error_type']
+)
+
+PREDICTION_DURATION = Histogram(
+    'ml_prediction_duration_seconds',
+    'Duration of ML predictions',
+    ['prediction_type'],
+    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
+)
+
+AI_REQUESTS = Counter(
+    'ml_ai_requests_total',
+    'Total AI (Ollama) requests',
+    ['endpoint']
+)
+
+AI_REQUEST_DURATION = Histogram(
+    'ml_ai_request_duration_seconds',
+    'Duration of AI (Ollama) requests',
+    ['endpoint'],
+    buckets=[1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 180.0]
+)
+
+AI_ERRORS = Counter(
+    'ml_ai_errors_total',
+    'Total AI (Ollama) errors',
+    ['endpoint', 'error_type']
+)
+
+SESSIONS_ANALYZED = Gauge(
+    'ml_sessions_analyzed_count',
+    'Number of sessions available for analysis'
+)
+
+CACHE_HITS = Counter(
+    'ml_cache_hits_total',
+    'Total cache hits',
+    ['cache_type']
+)
+
+CACHE_MISSES = Counter(
+    'ml_cache_misses_total',
+    'Total cache misses',
+    ['cache_type']
+)
 
 # Database connection status
 db_connected = False
@@ -65,6 +142,7 @@ def get_sessions():
 
 
 @app.route('/api/health')
+@metrics.do_not_track()
 def health():
     """Health check endpoint"""
     return jsonify({
@@ -80,23 +158,36 @@ def set_categories():
 
     This endpoint allows the web service to pass user's configured
     categories so AI prompts use the correct category list.
+    Updates both AIAnalyzer and AIChallengeGenerator.
     """
-    global ai_analyzer
+    global ai_analyzer, ai_generator
 
     data = request.get_json() or {}
     categories = data.get('categories', [])
 
+    updated_components = []
+
+    # Update AIAnalyzer
     if ai_analyzer is not None:
         ai_analyzer.update_categories(categories)
+        updated_components.append('ai_analyzer')
+
+    # Update AIChallengeGenerator (for next-session suggestions)
+    if ai_generator is not None:
+        ai_generator.update_categories(categories)
+        updated_components.append('ai_generator')
+
+    if updated_components:
         return jsonify({
             'status': 'ok',
             'categories_count': len(categories),
-            'categories': categories
+            'categories': categories,
+            'updated_components': updated_components
         })
     else:
         return jsonify({
             'status': 'error',
-            'message': 'AI Analyzer not initialized'
+            'message': 'No AI components initialized'
         }), 503
 
 
@@ -131,13 +222,20 @@ def recommendation():
     Returns:
         dict: Recommended preset with reason
     """
-    category = request.args.get('category')
+    start_time = time.time()
+    PREDICTION_REQUESTS.labels(prediction_type='recommendation').inc()
 
-    sessions = get_sessions()
-    recommender = PresetRecommender(sessions)
-
-    rec = recommender.recommend(category=category)
-    return jsonify(rec)
+    try:
+        category = request.args.get('category')
+        sessions = get_sessions()
+        SESSIONS_ANALYZED.set(len(sessions))
+        recommender = PresetRecommender(sessions)
+        rec = recommender.recommend(category=category)
+        PREDICTION_DURATION.labels(prediction_type='recommendation').observe(time.time() - start_time)
+        return jsonify(rec)
+    except Exception as e:
+        PREDICTION_ERRORS.labels(prediction_type='recommendation', error_type=type(e).__name__).inc()
+        raise
 
 
 @app.route('/api/prediction/today')
@@ -148,11 +246,19 @@ def prediction_today():
     Returns:
         dict: Predicted sessions and productivity for today
     """
-    sessions = get_sessions()
-    predictor = SessionPredictor(sessions)
+    start_time = time.time()
+    PREDICTION_REQUESTS.labels(prediction_type='today').inc()
 
-    prediction = predictor.predict_today()
-    return jsonify(prediction)
+    try:
+        sessions = get_sessions()
+        SESSIONS_ANALYZED.set(len(sessions))
+        predictor = SessionPredictor(sessions)
+        prediction = predictor.predict_today()
+        PREDICTION_DURATION.labels(prediction_type='today').observe(time.time() - start_time)
+        return jsonify(prediction)
+    except Exception as e:
+        PREDICTION_ERRORS.labels(prediction_type='today', error_type=type(e).__name__).inc()
+        raise
 
 
 @app.route('/api/prediction/week')
@@ -298,20 +404,31 @@ def predict_quality():
     else:
         data = {}
 
-    # Parse parameters with defaults
+    # Parse parameters with defaults (use 'is None' to handle 0 values correctly)
     now = datetime.now()
-    hour = data.get('hour') or request.args.get('hour', type=int)
+
+    hour = data.get('hour')
+    if hour is None:
+        hour = request.args.get('hour', type=int)
     if hour is None:
         hour = now.hour
 
-    day = data.get('day') or request.args.get('day', type=int)
+    day = data.get('day')
+    if day is None:
+        day = request.args.get('day', type=int)
     if day is None:
         day = now.weekday()
 
     preset = data.get('preset') or request.args.get('preset', 'deep_work')
     category = data.get('category') or request.args.get('category')
-    sessions_today = data.get('sessions_today') or request.args.get('sessions_today', 0, type=int)
-    minutes_since_last = data.get('minutes_since_last') or request.args.get('minutes_since_last', type=int)
+
+    sessions_today = data.get('sessions_today')
+    if sessions_today is None:
+        sessions_today = request.args.get('sessions_today', 0, type=int)
+
+    minutes_since_last = data.get('minutes_since_last')
+    if minutes_since_last is None:
+        minutes_since_last = request.args.get('minutes_since_last', type=int)
 
     try:
         sessions = get_sessions()
@@ -1336,7 +1453,7 @@ if __name__ == '__main__':
     else:
         print("  PostgreSQL: Connection failed")
 
-    print(f"\n  API available at: http://localhost:5001/api")
+    print(f"\n  API available at: http://localhost:5002/api")
     print("\n  Endpoints:")
     print("    GET  /api/health           - Health check")
     print("    GET  /api/analysis         - Full productivity analysis")
@@ -1373,4 +1490,4 @@ if __name__ == '__main__':
     print("    GET  /api/ai/cache-status        - AI cache status")
     print("\n" + "=" * 50 + "\n")
 
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=5002, debug=True)

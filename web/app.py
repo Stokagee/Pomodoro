@@ -13,6 +13,9 @@ from flask import Flask, render_template, jsonify, request, Response
 from flask_socketio import SocketIO, emit
 from pathlib import Path
 from dotenv import load_dotenv
+from prometheus_flask_exporter import PrometheusMetrics
+from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
+import time
 
 # Load environment variables
 load_dotenv()
@@ -45,12 +48,79 @@ from models.database import (
     # FocusAI Learning Recommender
     get_user_analytics_for_ai, get_last_session_context,
     get_cached_ai_recommendation, cache_ai_recommendation,
-    get_recent_tasks, invalidate_ai_cache
+    get_recent_tasks, invalidate_ai_cache,
+    # Category Management
+    rename_category_in_sessions
 )
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'pomodoro-secret-key-2025')
 socketio = SocketIO(app, cors_allowed_origins="*")
+
+# =============================================================================
+# PROMETHEUS METRICS
+# =============================================================================
+metrics = PrometheusMetrics(app, path=None)  # Disable automatic /metrics endpoint
+
+@app.route('/metrics')
+def prometheus_metrics():
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
+
+# Application info
+app_info = Info('pomodoro_web', 'Pomodoro Web Application Information')
+app_info.info({
+    'version': '2.0',
+    'service': 'pomodoro-web',
+    'preset_default': 'deep_work'
+})
+
+# Custom metrics
+SESSION_LOGGED = Counter(
+    'pomodoro_sessions_logged_total',
+    'Total number of sessions logged',
+    ['preset', 'category', 'completed']
+)
+
+SESSION_DURATION = Histogram(
+    'pomodoro_session_duration_minutes',
+    'Duration of pomodoro sessions in minutes',
+    ['preset'],
+    buckets=[15, 25, 30, 45, 52, 60, 90, 120]
+)
+
+PRODUCTIVITY_RATING = Histogram(
+    'pomodoro_productivity_rating',
+    'Productivity rating of sessions (1-100)',
+    ['category'],
+    buckets=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+)
+
+ACTIVE_USERS = Gauge(
+    'pomodoro_active_users',
+    'Number of active WebSocket connections'
+)
+
+ML_REQUEST_DURATION = Histogram(
+    'pomodoro_ml_request_duration_seconds',
+    'Duration of ML service requests',
+    ['endpoint'],
+    buckets=[0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0]
+)
+
+ML_REQUEST_ERRORS = Counter(
+    'pomodoro_ml_request_errors_total',
+    'Total ML service request errors',
+    ['endpoint']
+)
+
+
+@app.route('/health')
+@metrics.do_not_track()
+def health_check():
+    """Health check endpoint for monitoring"""
+    return jsonify({'status': 'healthy', 'service': 'pomodoro-web'})
+
 
 # Add Python built-ins to Jinja2 environment
 app.jinja_env.globals['max'] = max
@@ -78,22 +148,28 @@ def save_config(config):
 
 def get_ml_recommendation():
     """Get recommendation from ML service"""
+    start_time = time.time()
     try:
         response = requests.get(f'{ML_SERVICE_URL}/api/recommendation', timeout=2)
+        ML_REQUEST_DURATION.labels(endpoint='recommendation').observe(time.time() - start_time)
         if response.ok:
             return response.json()
     except Exception as e:
+        ML_REQUEST_ERRORS.labels(endpoint='recommendation').inc()
         print(f"ML service unavailable: {e}")
     return None
 
 
 def get_ml_prediction():
     """Get prediction from ML service"""
+    start_time = time.time()
     try:
         response = requests.get(f'{ML_SERVICE_URL}/api/prediction/today', timeout=2)
+        ML_REQUEST_DURATION.labels(endpoint='prediction').observe(time.time() - start_time)
         if response.ok:
             return response.json()
     except Exception as e:
+        ML_REQUEST_ERRORS.labels(endpoint='prediction').inc()
         print(f"ML service unavailable: {e}")
     return None
 
@@ -243,6 +319,16 @@ def insights():
                            optimal_schedule=optimal_schedule)
 
 
+@app.route('/settings')
+def settings():
+    """Settings page with category management"""
+    config = load_config()
+    today_stats = get_today_stats()
+    return render_template('settings.html',
+                           config=config,
+                           today_stats=today_stats)
+
+
 # API Routes
 @app.route('/api/config')
 def api_config():
@@ -258,6 +344,100 @@ def api_update_config():
     config.update(updates)
     save_config(config)
     return jsonify({'status': 'ok', 'config': config})
+
+
+@app.route('/api/categories', methods=['POST'])
+def api_manage_categories():
+    """Category management API endpoint.
+
+    Actions:
+    - add: Add new category
+    - rename: Rename category and update all sessions
+    - delete: Delete category (optionally reassign sessions)
+    """
+    data = request.json
+    if not data:
+        return jsonify({'success': False, 'error': 'No data provided'}), 400
+
+    action = data.get('action')
+    config = load_config()
+    categories = config.get('categories', [])
+    sessions_updated = 0
+
+    if action == 'add':
+        name = data.get('name', '').strip()
+        if not name:
+            return jsonify({'success': False, 'error': 'Nazev kategorie je prazdny'})
+        if len(name) > 50:
+            return jsonify({'success': False, 'error': 'Nazev je prilis dlouhy (max 50 znaku)'})
+        if name in categories:
+            return jsonify({'success': False, 'error': 'Kategorie jiz existuje'})
+
+        categories.append(name)
+        config['categories'] = categories
+        save_config(config)
+        _sync_categories_to_ml_service(categories)
+
+        return jsonify({'success': True, 'categories': categories})
+
+    elif action == 'rename':
+        old_name = data.get('oldName', '').strip()
+        new_name = data.get('newName', '').strip()
+
+        if not old_name or not new_name:
+            return jsonify({'success': False, 'error': 'Chybi nazvy kategorii'})
+        if old_name not in categories:
+            return jsonify({'success': False, 'error': 'Puvodni kategorie neexistuje'})
+        if new_name in categories and new_name != old_name:
+            return jsonify({'success': False, 'error': 'Kategorie s novym nazvem jiz existuje'})
+
+        # Update category in config
+        idx = categories.index(old_name)
+        categories[idx] = new_name
+        config['categories'] = categories
+        save_config(config)
+
+        # Update all sessions with old category name
+        sessions_updated = rename_category_in_sessions(old_name, new_name)
+
+        _sync_categories_to_ml_service(categories)
+
+        return jsonify({
+            'success': True,
+            'categories': categories,
+            'sessions_updated': sessions_updated
+        })
+
+    elif action == 'delete':
+        name = data.get('name', '').strip()
+        reassign_to = data.get('reassignTo')
+
+        if not name:
+            return jsonify({'success': False, 'error': 'Chybi nazev kategorie'})
+        if name == 'Other':
+            return jsonify({'success': False, 'error': 'Kategorii "Other" nelze smazat'})
+        if name not in categories:
+            return jsonify({'success': False, 'error': 'Kategorie neexistuje'})
+
+        # Remove category from config
+        categories.remove(name)
+        config['categories'] = categories
+        save_config(config)
+
+        # Optionally reassign sessions
+        if reassign_to and reassign_to in categories:
+            sessions_updated = rename_category_in_sessions(name, reassign_to)
+
+        _sync_categories_to_ml_service(categories)
+
+        return jsonify({
+            'success': True,
+            'categories': categories,
+            'sessions_updated': sessions_updated
+        })
+
+    else:
+        return jsonify({'success': False, 'error': 'Neznama akce'}), 400
 
 
 @app.route('/api/log', methods=['POST'])
@@ -302,6 +482,16 @@ def api_log_session():
         productivity_rating=rating,
         notes=notes
     )
+
+    # Record Prometheus metrics
+    SESSION_LOGGED.labels(
+        preset=preset,
+        category=category,
+        completed=str(data.get('completed', True))
+    ).inc()
+    SESSION_DURATION.labels(preset=preset).observe(int(duration))
+    if rating is not None:
+        PRODUCTIVITY_RATING.labels(category=category).observe(rating)
 
     # Update daily focus stats after logging session
     from datetime import date
@@ -1593,7 +1783,7 @@ def api_ai_next_session():
                 'hour': datetime.now().hour,
                 'sessions': today_stats.get('sessions_count', 0)
             },
-            timeout=15
+            timeout=180
         )
         if response.status_code == 200:
             result = response.json()
@@ -1630,7 +1820,7 @@ def api_ai_extract_topics():
         response = requests.post(
             f"{ML_SERVICE_URL}/api/ai/extract-topics",
             json={'tasks': tasks},
-            timeout=30
+            timeout=180
         )
         if response.status_code == 200:
             return jsonify(response.json())
@@ -1674,7 +1864,7 @@ def api_ai_analyze_patterns():
         response = requests.post(
             f"{ML_SERVICE_URL}/api/ai/analyze-patterns",
             json=data,
-            timeout=30
+            timeout=180
         )
         if response.status_code == 200:
             return jsonify(response.json())
@@ -1935,7 +2125,14 @@ def api_save_start_day():
 @socketio.on('connect')
 def handle_connect():
     """Client connected"""
+    ACTIVE_USERS.inc()
     emit('connected', {'status': 'connected'})
+
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Client disconnected"""
+    ACTIVE_USERS.dec()
 
 
 @socketio.on('timer_complete')

@@ -80,7 +80,7 @@
                     <h3>Týdenní questy</h3>
                 </div>
                 <div class="quests-list">
-                    {% for quest in weekly_quests %}
+                    {% for quest in weekly_quests.quests %}
                     <div class="quest-item {% if quest.completed %}completed{% endif %}">
                         <div class="quest-info">
                             <span class="quest-title">{{ quest.title }}</span>
@@ -90,7 +90,7 @@
                             <div class="quest-fill {% if quest.completed %}completed{% endif %}"
                                  style="width: {{ min((quest.progress|default(0)) / max(1, quest.target|default(1)) * 100, 100)|int }}%"></div>
                         </div>
-                        <span class="quest-xp">+{{ quest.xp_reward }} XP</span>
+                        <span class="quest-xp">+{{ quest.xp|default(quest.xp_reward, true) }} XP</span>
                     </div>
                     {% else %}
                     <p class="no-quests">Žádné aktivní questy tento týden</p>
