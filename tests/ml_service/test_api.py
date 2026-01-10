@@ -16,17 +16,14 @@ class TestHealthEndpoint:
         assert response.status_code == 200
 
         data = json.loads(response.data)
-        assert 'status' in data or 'mongodb' in data
+        assert 'status' in data or 'database' in data
 
 
 class TestAnalysisEndpoint:
     """Test analysis API endpoint."""
 
-    def test_analysis_empty_db(self, ml_client, empty_db, monkeypatch):
+    def test_analysis_empty_db(self, ml_client, mock_db_empty):
         """GET /api/analysis should return default values for empty DB."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', empty_db)
-
         response = ml_client.get('/api/analysis')
         assert response.status_code == 200
 
@@ -34,11 +31,8 @@ class TestAnalysisEndpoint:
         assert 'analysis' in data
         assert data['analysis'].get('total_sessions_analyzed', 0) == 0
 
-    def test_analysis_with_data(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_analysis_with_data(self, ml_client, mock_db):
         """GET /api/analysis should return computed analysis."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/analysis')
         assert response.status_code == 200
 
@@ -54,11 +48,8 @@ class TestAnalysisEndpoint:
 class TestRecommendationEndpoint:
     """Test preset recommendation endpoint."""
 
-    def test_recommendation_returns_preset(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_recommendation_returns_preset(self, ml_client, mock_db):
         """GET /api/recommendation should return a preset."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/recommendation')
         assert response.status_code == 200
 
@@ -66,11 +57,8 @@ class TestRecommendationEndpoint:
         assert 'recommended_preset' in data
         assert data['recommended_preset'] in ['deep_work', 'learning', 'quick_tasks', 'flow_mode']
 
-    def test_recommendation_with_category(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_recommendation_with_category(self, ml_client, mock_db):
         """GET /api/recommendation?category=SOAP should consider category."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/recommendation?category=SOAP')
         assert response.status_code == 200
 
@@ -79,11 +67,8 @@ class TestRecommendationEndpoint:
         assert 'confidence' in data
 
     @pytest.mark.freeze_time('2025-12-28 08:00:00')
-    def test_recommendation_morning(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_recommendation_morning(self, ml_client, mock_db):
         """Morning hours should recommend deep_work or learning."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/recommendation')
         data = json.loads(response.data)
 
@@ -91,11 +76,8 @@ class TestRecommendationEndpoint:
         assert data['recommended_preset'] in ['deep_work', 'learning', 'flow_mode']
 
     @pytest.mark.freeze_time('2025-12-28 14:00:00')
-    def test_recommendation_afternoon(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_recommendation_afternoon(self, ml_client, mock_db):
         """Afternoon hours may recommend lighter presets."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/recommendation')
         data = json.loads(response.data)
 
@@ -103,11 +85,8 @@ class TestRecommendationEndpoint:
         assert 'recommended_preset' in data
 
     @pytest.mark.freeze_time('2025-12-28 18:00:00')
-    def test_recommendation_evening(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_recommendation_evening(self, ml_client, mock_db):
         """Evening hours recommendation."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/recommendation')
         data = json.loads(response.data)
 
@@ -117,11 +96,8 @@ class TestRecommendationEndpoint:
 class TestPredictionEndpoints:
     """Test prediction API endpoints."""
 
-    def test_prediction_today(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_prediction_today(self, ml_client, mock_db):
         """GET /api/prediction/today should return today's prediction."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/prediction/today')
         assert response.status_code == 200
 
@@ -129,11 +105,8 @@ class TestPredictionEndpoints:
         assert 'predicted_sessions' in data
         assert 'confidence' in data
 
-    def test_prediction_week(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_prediction_week(self, ml_client, mock_db):
         """GET /api/prediction/week should return 7-day forecast."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/prediction/week')
         assert response.status_code == 200
 
@@ -144,11 +117,8 @@ class TestPredictionEndpoints:
 class TestTrendsEndpoint:
     """Test trends API endpoint."""
 
-    def test_trends_endpoint(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_trends_endpoint(self, ml_client, mock_db):
         """GET /api/trends should return trend data."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/trends')
         assert response.status_code == 200
 
@@ -160,11 +130,8 @@ class TestTrendsEndpoint:
 class TestInsightsSummary:
     """Test combined insights endpoint."""
 
-    def test_insights_summary(self, ml_client, sample_sessions, mock_db, monkeypatch):
+    def test_insights_summary(self, ml_client, mock_db):
         """GET /api/insights/summary should return combined data."""
-        import app as ml_app_module
-        monkeypatch.setattr(ml_app_module, 'db', mock_db)
-
         response = ml_client.get('/api/insights/summary')
         assert response.status_code == 200
 

@@ -148,6 +148,33 @@ class AIChallengeGenerator:
         self.categories = categories or []
         logger.info(f"AIChallengeGenerator categories updated: {len(self.categories)} categories")
 
+    def clear_cache(self, cache_type: str = None) -> int:
+        """Clear internal cache.
+
+        Args:
+            cache_type: Optional specific cache type to clear (e.g., 'next_session', 'learning_rec').
+                       If None, clears all caches.
+
+        Returns:
+            Number of cache entries cleared
+        """
+        if cache_type:
+            # Clear specific cache type
+            keys_to_remove = [k for k in self._cache.keys() if k.startswith(cache_type)]
+            for key in keys_to_remove:
+                del self._cache[key]
+                if key in self._cache_expiry:
+                    del self._cache_expiry[key]
+            logger.info(f"Cleared {len(keys_to_remove)} cache entries for type: {cache_type}")
+            return len(keys_to_remove)
+        else:
+            # Clear all cache
+            count = len(self._cache)
+            self._cache.clear()
+            self._cache_expiry.clear()
+            logger.info(f"Cleared all {count} cache entries")
+            return count
+
     def health_check(self) -> Dict[str, Any]:
         """Check if AI provider is available (Ollama or Cloud)"""
         import requests
@@ -590,31 +617,34 @@ Odpovez pouze jednou motivacni vetou."""
     # FocusAI - Learning Recommendation System
     # =========================================================================
 
-    FOCUSAI_SYSTEM_PROMPT = """Jsi "FocusAI" - osobni AI asistent pro produktivitu a uceni v Pomodoro timer aplikaci.
+    FOCUSAI_SYSTEM_PROMPT = """You are FocusAI - pragmatic mentor for a QA Test Automation Engineer actively job hunting.
 
-TVOJE HLAVNI ROLE:
-1. ANALYZUJ - Prozkoumej uzivatelova data (sessions, kategorie, ulohy, cas)
-2. IDENTIFIKUJ MEZERY - Najdi oblasti ktere uzivatel zanedbava
-3. DOPORUC - Navrhni konkretni temata a ukoly k uceni
-4. MOTIVUJ - Bud podporujici ale uprimny
+PRIORITY ORDER (always respect):
+1. JOB HUNTING - CV, portfolio, interview prep, LinkedIn, applications
+2. SKILL BUILDING - Robot Framework, API testing (Postman/SOAP UI), SQL, automation
+3. LEARNING - new tools, certifications (self-study only, no paid courses)
 
-TVOJE OSOBNOST:
-- Jsi jako zkuseny mentor a kouc
-- Mluvis cesky, prizpusobive a pratelsky
-- Jsi datove orientovany - vzdy podkladej doporuceni cisly
-- Jsi pozitivni ale realisticky
+STYLE:
+- Direct, no fluff, max 2 sentences per point
+- Always say: WHAT + WHY + WHEN
+- Data-backed when possible
 
-PRAVIDLA PRO DOPORUCENI:
-1. Vzdy zohledni aktualni skill level uzivatele
-2. Doporucuj postupne - ne prilis velke skoky
-3. Propojuj temata - napriklad "Kdyz delas React, zkus i TypeScript"
-4. Respektuj uzivatelovy preference (co dela rad)
-5. Navrhuj konkretni akce, ne obecne rady
-6. Pokud uzivatel fokusuje 80%+ na jednu kategorii, doporuc rozsireni
-7. Identifikuj vzory v ulohach a navrhni navazujici temata
+RULES:
+1. If no Job Hunting in 2+ days -> remind about priority #1
+2. If time > 18:00 -> suggest rest, not more work
+3. If < 4 sessions today -> suggest lighter tasks
+4. Every recommendation has EXPIRATION: today | this_week | ongoing
+5. Skip generic advice - be specific to QA testing context
+6. If recommending learning: explain how it helps job hunting
 
-VYSTUPNI FORMAT:
-Vzdy vrat strukturovany JSON podle zadaneho schema. Zadny dalsi text."""
+RECOMMENDATION FORMAT:
+- priority: 1|2|3
+- action: specific task (max 50 chars)
+- reason: why now (max 30 chars)
+- expires: today|this_week|ongoing
+- skip_if: when to ignore this advice
+
+OUTPUT: JSON only, no additional text."""
 
     def generate_learning_recommendations(self, user_data: Dict) -> Dict:
         """
@@ -639,7 +669,7 @@ Vzdy vrat strukturovany JSON podle zadaneho schema. Zadny dalsi text."""
             "sessions_count": len(user_data.get('recent_sessions', []))
         })
 
-        if self._is_cache_valid(cache_key, max_age_hours=24):
+        if self._is_cache_valid(cache_key, max_age_hours=2):
             return self._cache[cache_key]
 
         # Try AI generation
@@ -647,7 +677,7 @@ Vzdy vrat strukturovany JSON podle zadaneho schema. Zadny dalsi text."""
             recommendation = self._generate_ai_learning_recommendations(user_data)
             if recommendation:
                 self._cache[cache_key] = recommendation
-                self._cache_expiry[cache_key] = datetime.now() + timedelta(hours=24)
+                self._cache_expiry[cache_key] = datetime.now() + timedelta(hours=2)
                 return recommendation
 
         # Fallback
@@ -784,40 +814,98 @@ Vrat JSON v tomto PRESNEM formatu:
 
     def _generate_ai_session_suggestion(self, context: Dict) -> Optional[Dict]:
         """Generate quick session suggestion using AI (Ollama or Cloud API)"""
-        # Build category list string - use user's categories or fallback
-        categories_str = ", ".join(self.categories) if self.categories else "Coding, Learning, Other"
+        # Build category list string - use user's categories or fallback to "Other"
+        categories_str = ", ".join(self.categories) if self.categories else "Other"
 
-        system_prompt = f"""Jsi FocusAI - doporucujes dalsi ukol pro Pomodoro timer.
-KRITICKE PRAVIDLO: Kategorie MUSI byt PRESNE jedna z tohoto seznamu: {categories_str}
-NIKDY nevymyslej vlastni kategorie! Pouzij POUZE kategorie ze seznamu vyse.
-Odpovez POUZE JSON objektem. Zadny jiny text."""
+        # Získat bohatší kontext
+        weekly_stats = context.get('weekly_stats', {})
+        user_profile = context.get('user_profile', {})
+
+        # System prompt - pragmatic mentor for QA tester job hunting
+        system_prompt = f"""You are FocusAI - pragmatic mentor for QA Test Automation Engineer actively job hunting.
+
+STYLE:
+- Direct, no fluff
+- Efficiency-focused
+- Actionable, specific tasks only
+
+USER CONTEXT - QA TESTER tools:
+- Postman (API testing)
+- SOAP UI (web services, SOAP/REST)
+- Robot Framework (test automation)
+- DBeaver (database verification)
+
+PRIORITY ORDER:
+1. JOB HUNTING - CV, LinkedIn, interview prep, applications, portfolio
+2. SKILL BUILDING - automation, API testing, SQL queries
+3. LEARNING - new tools (self-study only)
+
+TASK TYPES to suggest:
+- API tests in Postman (collections, environments, assertions)
+- Automated tests in Robot Framework
+- SOAP/REST testing in SOAP UI
+- DB data verification via DBeaver
+- Test case writing, bug reports
+- Defect analysis, root cause analysis
+- Regression and smoke tests
+- CV/LinkedIn updates (for Job Hunting category)
+
+CRITICAL RULES:
+- Category MUST be exactly one of: {categories_str}
+- If no Job Hunting in 2+ days -> prioritize Job Hunting
+- If time > 18:00 -> suggest rest or light tasks
+- Reply with VALID JSON only
+- Topic: specific (max 50 chars)
+- Reason: brief (max 100 chars)
+- English only"""
 
         hour = context.get('time_of_day', 12)
-        time_context = "rano" if hour < 12 else "odpoledne" if hour < 18 else "vecer"
+        time_context = "morning" if hour < 12 else "afternoon" if hour < 18 else "evening"
+        day_name = context.get('day_name', 'today')
 
-        prompt = f"""Doporuc dalsi session pro uzivatele.
+        # Format category breakdown from weekly stats
+        categories_breakdown = weekly_stats.get('categories', {})
+        categories_info = ", ".join([f"{k}: {v}x" for k, v in categories_breakdown.items()]) if categories_breakdown else "no data"
 
-Kontext:
-- Cas: {hour}:00 ({time_context})
-- Posledni kategorie: {context.get('last_category', 'nezname')}
-- Posledni ukol: {context.get('last_task', 'nezname')}
-- Dnesni sessions: {context.get('sessions_today', 0)}
+        # Check if Job Hunting was done recently
+        job_hunting_count = categories_breakdown.get('Job Hunting', 0)
+        job_hunting_note = "ALERT: No Job Hunting this week!" if job_hunting_count == 0 else f"Job Hunting: {job_hunting_count}x this week"
 
-POVOLENE KATEGORIE (vyber PRESNE jednu z tohoto seznamu): {categories_str}
+        prompt = f"""Suggest next Pomodoro session.
 
-Pravidla:
-1. {time_context} doporucuj {self._get_time_recommendation(hour)}
-2. Pokud uzivatel delal hodne jedne kategorie, navrhni jinou Z POVOLENEHO SEZNAMU
-3. Konkretni tema, ne obecne
-4. KATEGORIE MUSI BYT PRESNE JEDNA Z: {categories_str}
+CURRENT CONTEXT:
+- Time: {hour}:00 ({time_context})
+- Day: {day_name}
+- Sessions today: {context.get('sessions_today', 0)}
+- Last category: {context.get('last_category', 'unknown')}
+- Last task: {context.get('last_task', 'unknown')}
 
-Vrat JSON:
+WEEKLY STATS (last 7 days):
+- Total sessions: {weekly_stats.get('weekly_total', 0)}
+- Avg productivity: {weekly_stats.get('avg_productivity', 0)}/5
+- Category distribution: {categories_info}
+- Streak: {weekly_stats.get('streak', 0)} days
+- {job_hunting_note}
+
+ALLOWED CATEGORIES: {categories_str}
+
+DECISION LOGIC:
+1. Morning (6-12): Deep work - complex tasks, {self._get_time_recommendation(hour)}
+2. Afternoon (12-17): Learning or routine tasks
+3. Evening (17+): Light tasks, documentation, planning, OR rest
+
+4. If Job Hunting < 2 sessions this week -> prioritize Job Hunting
+5. If one category > 50% of weekly sessions -> suggest different category for balance
+6. If productivity < 3.0 -> suggest shorter/lighter session (quick_tasks preset)
+7. If time > 18:00 -> prefer rest or very light tasks
+
+Return ONLY this JSON (no other text):
 {{
-    "category": "<jedna z: {categories_str}>",
-    "topic": "Konkretni tema cesky",
-    "preset": "deep_work",
-    "reason": "Kratky duvod cesky",
-    "confidence": 0.8
+    "category": "<exactly one of: {categories_str}>",
+    "topic": "Specific task (max 50 chars)",
+    "preset": "deep_work|learning|quick_tasks|flow_mode",
+    "reason": "Brief reason (max 100 chars)",
+    "confidence": 0.0-1.0
 }}"""
 
         response = self._call_llm(prompt, system_prompt)
@@ -866,13 +954,13 @@ Vrat JSON:
     def _get_time_recommendation(self, hour: int) -> str:
         """Get recommendation based on time of day"""
         if 5 <= hour < 12:
-            return "kreativni praci (Coding, Design) - rano je mozek cerstvy"
+            return "complex tasks (automation, API testing) - morning brain is fresh"
         elif 12 <= hour < 14:
-            return "lehci ukoly (Review, Planning) - po obede je energie nizsi"
+            return "lighter tasks (review, planning) - post-lunch energy dip"
         elif 14 <= hour < 18:
-            return "uceni nebo rutinni praci - odpoledne je dobre pro learning"
+            return "learning or routine work - afternoon is good for skill building"
         else:
-            return "planovani na zitra nebo review - vecer je dobry pro reflexi"
+            return "planning tomorrow or rest - evening is for reflection, not heavy work"
 
     def extract_topics_from_tasks(self, tasks: List[Dict]) -> Dict:
         """
@@ -1071,4 +1159,120 @@ Vrat JSON:
             },
             "recommendations": recommendations,
             "warnings": []
+        }
+
+    # =========================================================================
+    # Expand Suggestion - Follow-up questions for AI recommendations
+    # =========================================================================
+
+    def expand_suggestion(self, suggestion: Dict, question_type: str, user_context: Dict = None) -> Dict:
+        """
+        Expand a previous AI suggestion with more details based on question type.
+
+        Args:
+            suggestion: Original suggestion dict with category, topic, reason
+            question_type: Type of follow-up question:
+                - 'resources': Learning resources, documentation, tutorials
+                - 'steps': Concrete action steps
+                - 'time_estimate': Time needed to complete/learn
+                - 'connection': How it connects to career goals
+            user_context: Optional dict with real user data:
+                - recent_tasks: List of actual user tasks
+                - category_sessions: Recent sessions in this category
+                - user_tools: List of user's tools/technologies
+
+        Returns:
+            Dict with expanded answer
+        """
+        from prompts import EXPAND_SUGGESTION_PROMPT
+
+        # Map question types to icons
+        icons = {
+            'resources': '📚',
+            'steps': '🎯',
+            'time_estimate': '⏱️',
+            'connection': '🔗'
+        }
+
+        # Validate question type
+        if question_type not in icons:
+            question_type = 'resources'
+
+        # Prepare user context data for prompt
+        user_tasks = "Žádné záznamy"
+        recent_sessions = "Žádné záznamy"
+        user_tools = "Postman, Robot Framework, DBeaver, SOAP UI"  # default
+
+        if user_context:
+            # Format user tasks
+            tasks = user_context.get('recent_tasks', [])
+            if tasks:
+                user_tasks = "\n".join([f"• {t}" for t in tasks[:10] if t])
+
+            # Format sessions with notes
+            sessions = user_context.get('category_sessions', [])
+            if sessions:
+                session_lines = []
+                for s in sessions[:5]:
+                    task = s.get('task', 'Unknown task')
+                    rating = s.get('productivity_rating', 'N/A')
+                    notes = s.get('notes', '')
+                    line = f"• {task} (produktivita: {rating})"
+                    if notes:
+                        line += f"\n  Poznámky: {notes[:100]}..."
+                    session_lines.append(line)
+                recent_sessions = "\n".join(session_lines)
+
+            # User tools
+            tools = user_context.get('user_tools', [])
+            if tools:
+                user_tools = ", ".join(tools)
+
+        prompt = EXPAND_SUGGESTION_PROMPT.format(
+            category=suggestion.get('category', 'Unknown'),
+            topic=suggestion.get('topic', 'Unknown'),
+            reason=suggestion.get('reason', 'No reason provided'),
+            question_type=question_type,
+            user_tasks=user_tasks,
+            recent_sessions=recent_sessions,
+            user_tools=user_tools
+        )
+
+        response = self._call_llm(prompt, self.FOCUSAI_SYSTEM_PROMPT)
+        result = self._parse_json_response(response)
+
+        if result:
+            result['ai_generated'] = True
+            result['original_suggestion'] = {
+                'category': suggestion.get('category'),
+                'topic': suggestion.get('topic')
+            }
+            result['used_user_context'] = bool(user_context)
+            # Ensure icon is set
+            if 'icon' not in result:
+                result['icon'] = icons.get(question_type, '💡')
+            return result
+
+        # Fallback response
+        return self._get_expand_fallback(suggestion, question_type, icons)
+
+    def _get_expand_fallback(self, suggestion: Dict, question_type: str, icons: Dict) -> Dict:
+        """Generate fallback response when AI is unavailable."""
+        category = suggestion.get('category', 'Learning')
+        topic = suggestion.get('topic', 'this topic')
+
+        fallbacks = {
+            'resources': f"• Oficiální dokumentace pro {topic}\n• YouTube tutoriály\n• Praktické cvičení v reálném projektu",
+            'steps': f"• Začni s základy {topic}\n• Procvič si na malém projektu\n• Aplikuj v praxi",
+            'time_estimate': f"• Základy: 2-3 sessions (cca 2 hodiny)\n• Praktická znalost: 5-8 sessions\n• Pokročilá úroveň: 15+ sessions",
+            'connection': f"• {category} je důležitá pro QA Test Automation\n• Zlepší tvoje portfolio\n• Zvýší šance při pohovorech"
+        }
+
+        return {
+            'answer': fallbacks.get(question_type, 'Více informací není k dispozici.'),
+            'type': question_type,
+            'icon': icons.get(question_type, '💡'),
+            'confidence': 0.3,
+            'ai_generated': False,
+            'fallback': True
         }

@@ -1,10 +1,11 @@
 """
 ML Service specific pytest fixtures.
-Provides Flask app and test client with mocked MongoDB.
+Provides Flask app and test client with mocked PostgreSQL.
 """
 import pytest
 import sys
 import os
+from unittest.mock import MagicMock, patch
 
 # Get absolute path and add to sys.path for imports
 ML_SERVICE_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'ml-service')
@@ -26,14 +27,24 @@ def _add_ml_to_path():
 
 
 @pytest.fixture
-def ml_app(mock_db, monkeypatch):
-    """Create ML Flask app with mocked MongoDB."""
+def ml_app(mock_db_data, monkeypatch):
+    """Create ML Flask app with mocked PostgreSQL."""
     _add_ml_to_path()
 
-    # Patch before importing
-    import app as ml_app_module
+    # Mock psycopg2 imports
+    mock_psycopg2 = MagicMock()
+    monkeypatch.setitem(sys.modules, 'psycopg2', mock_psycopg2)
+    monkeypatch.setitem(sys.modules, 'psycopg2.pool', mock_psycopg2.pool)
+    monkeypatch.setitem(sys.modules, 'psycopg2.sql', MagicMock())
+    monkeypatch.setitem(sys.modules, 'psycopg2.extras', MagicMock())
 
-    monkeypatch.setattr(ml_app_module, 'db', mock_db)
+    # Mock pgvector
+    mock_pgvector = MagicMock()
+    monkeypatch.setitem(sys.modules, 'pgvector', mock_pgvector)
+    monkeypatch.setitem(sys.modules, 'pgvector.psycopg2', mock_pgvector.psycopg2)
+
+    # Import app after patching
+    import app as ml_app_module
 
     ml_app_module.app.config['TESTING'] = True
 
@@ -905,3 +916,33 @@ def single_category_detector(single_category_sessions):
     _add_ml_to_path()
     from models.anomaly_detector import PatternAnomalyDetector
     return PatternAnomalyDetector(single_category_sessions)
+
+
+# === API Test Fixtures (mock database module functions) ===
+
+@pytest.fixture
+def mock_db(monkeypatch, sample_sessions_data):
+    """Mock database functions for ML service API tests.
+
+    Patches app.get_sessions() and app.db_connected to provide test data.
+    This replaces the old MongoDB-style mock that tried to set app.db.
+    """
+    _add_ml_to_path()
+    import app as ml_app
+
+    monkeypatch.setattr(ml_app, 'db_connected', True)
+    monkeypatch.setattr(ml_app, 'get_sessions', lambda: sample_sessions_data)
+
+    return sample_sessions_data
+
+
+@pytest.fixture
+def mock_db_empty(monkeypatch):
+    """Mock database to return empty results."""
+    _add_ml_to_path()
+    import app as ml_app
+
+    monkeypatch.setattr(ml_app, 'db_connected', True)
+    monkeypatch.setattr(ml_app, 'get_sessions', lambda: [])
+
+    return []

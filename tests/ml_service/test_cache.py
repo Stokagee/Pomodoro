@@ -1,6 +1,6 @@
 """
 CacheManager Tests.
-Tests AI response caching functionality in MongoDB.
+Tests AI response caching functionality in PostgreSQL.
 """
 import pytest
 from datetime import datetime, timedelta
@@ -15,33 +15,40 @@ if ML_SERVICE_DIR not in sys.path:
 
 
 @pytest.fixture
-def mock_db():
-    """Create a mock MongoDB database."""
-    db = MagicMock()
-    db.ai_cache = MagicMock()
-    return db
+def mock_database():
+    """Create a mock database module."""
+    mock = MagicMock()
+    mock.get_cached = MagicMock(return_value=None)
+    mock.set_cache = MagicMock()
+    mock.invalidate_all_cache = MagicMock(return_value=5)
+    mock.clear_all_cache = MagicMock(return_value=8)
+    mock.get_cache_status = MagicMock(return_value={'total_cached': 2, 'valid': 1, 'caches': []})
+    return mock
 
 
 @pytest.fixture
-def cache_manager(mock_db):
+def cache_manager(mock_database):
     """Create CacheManager with mocked database."""
-    from models.ai_analyzer import CacheManager
-    return CacheManager(mock_db)
+    with patch.dict('sys.modules', {'db': mock_database}):
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            return CacheManager()
 
 
 class TestCacheManagerInit:
     """Test CacheManager initialization."""
 
-    def test_init_creates_indexes(self, mock_db):
-        """Should create indexes on initialization."""
-        from models.ai_analyzer import CacheManager
-        CacheManager(mock_db)
+    def test_init_no_args(self):
+        """Should initialize without arguments."""
+        with patch('models.ai_analyzer.database'):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            assert manager is not None
 
-        mock_db.ai_cache.create_index.assert_called()
-
-    def test_init_collection_reference(self, cache_manager, mock_db):
-        """Should store reference to ai_cache collection."""
-        assert cache_manager.collection == mock_db.ai_cache
+    def test_cache_durations_defined(self, cache_manager):
+        """Should have cache durations defined."""
+        assert 'morning_briefing' in cache_manager.CACHE_DURATIONS
+        assert 'evening_review' in cache_manager.CACHE_DURATIONS
 
 
 class TestCacheDurations:
@@ -64,132 +71,119 @@ class TestCacheDurations:
         assert cache_manager.CACHE_DURATIONS.get('analyze_quality') == 0.5
 
     def test_learning_duration(self, cache_manager):
-        """Learning recommendations should cache for 24 hours."""
-        assert cache_manager.CACHE_DURATIONS.get('learning') == 24
+        """Learning recommendations should cache for 2 hours (dynamic)."""
+        assert cache_manager.CACHE_DURATIONS.get('learning') == 2
 
 
 class TestGetCached:
     """Test cache retrieval functionality."""
 
-    def test_cache_hit(self, cache_manager, mock_db):
+    def test_cache_hit(self, mock_database):
         """Should return cached data when valid cache exists."""
-        expected_data = {'analysis': 'test', 'score': 85}
-        mock_db.ai_cache.find_one.return_value = {
-            'cache_type': 'morning_briefing',
-            'data': expected_data,
-            'generated_at': datetime.now(),
-            'invalidated': False,
-            'expires_at': datetime.now() + timedelta(hours=2)
-        }
+        expected_data = {'analysis': 'test', 'score': 85, 'from_cache': True}
+        mock_database.get_cached.return_value = expected_data
 
-        result = cache_manager.get_cached('morning_briefing')
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_cached('morning_briefing')
 
         assert result is not None
         assert result['analysis'] == 'test'
         assert result['score'] == 85
-        assert result['from_cache'] is True
 
-    def test_cache_miss(self, cache_manager, mock_db):
+    def test_cache_miss(self, mock_database):
         """Should return None when no cache exists."""
-        mock_db.ai_cache.find_one.return_value = None
+        mock_database.get_cached.return_value = None
 
-        result = cache_manager.get_cached('morning_briefing')
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_cached('morning_briefing')
 
         assert result is None
 
-    def test_cache_with_params(self, cache_manager, mock_db):
+    def test_cache_with_params(self, mock_database):
         """Should use cache key when params provided."""
-        mock_db.ai_cache.find_one.return_value = None
+        mock_database.get_cached.return_value = None
 
-        params = {'preset': 'deep_work', 'category': 'Coding'}
-        cache_manager.get_cached('analyze_quality', params)
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            params = {'preset': 'deep_work', 'category': 'Coding'}
+            manager.get_cached('analyze_quality', params)
 
-        # Verify query includes cache_key
-        call_args = mock_db.ai_cache.find_one.call_args[0][0]
-        assert 'cache_key' in call_args
-
-    def test_cache_query_filters_invalidated(self, cache_manager, mock_db):
-        """Should filter out invalidated caches."""
-        mock_db.ai_cache.find_one.return_value = None
-
-        cache_manager.get_cached('morning_briefing')
-
-        call_args = mock_db.ai_cache.find_one.call_args[0][0]
-        assert call_args['invalidated'] is False
-
-    def test_cache_query_filters_expired(self, cache_manager, mock_db):
-        """Should filter out expired caches."""
-        mock_db.ai_cache.find_one.return_value = None
-
-        cache_manager.get_cached('morning_briefing')
-
-        call_args = mock_db.ai_cache.find_one.call_args[0][0]
-        assert '$gt' in call_args['expires_at']
+        # Verify database.get_cached was called with cache_key
+        mock_database.get_cached.assert_called_once()
+        call_args = mock_database.get_cached.call_args[0]
+        assert call_args[0] == 'analyze_quality'
+        assert call_args[1] is not None  # cache_key generated
 
 
 class TestSetCache:
     """Test cache storage functionality."""
 
-    def test_set_cache_upserts(self, cache_manager, mock_db):
-        """Should upsert cache entry."""
+    def test_set_cache_calls_database(self, mock_database):
+        """Should call database.set_cache."""
         data = {'result': 'test'}
-        cache_manager.set_cache('morning_briefing', data)
 
-        mock_db.ai_cache.update_one.assert_called_once()
-        call_args = mock_db.ai_cache.update_one.call_args
-        assert call_args[1]['upsert'] is True
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            manager.set_cache('morning_briefing', data)
 
-    def test_set_cache_uses_correct_ttl(self, cache_manager, mock_db):
+        mock_database.set_cache.assert_called_once()
+
+    def test_set_cache_uses_correct_ttl(self, mock_database):
         """Should set expiration based on cache type."""
         data = {'result': 'test'}
-        cache_manager.set_cache('morning_briefing', data)
 
-        call_args = mock_db.ai_cache.update_one.call_args[0][1]['$set']
-        expires_at = call_args['expires_at']
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            manager.set_cache('morning_briefing', data)
 
-        # Morning briefing should expire in ~4 hours
-        expected_delta = timedelta(hours=4)
-        actual_delta = expires_at - datetime.now()
-        assert abs(actual_delta.total_seconds() - expected_delta.total_seconds()) < 60
+        # Morning briefing should use 4 hours TTL
+        call_args = mock_database.set_cache.call_args[0]
+        assert call_args[3] == 4  # ttl_hours
 
-    def test_set_cache_with_params(self, cache_manager, mock_db):
+    def test_set_cache_with_params(self, mock_database):
         """Should include cache key when params provided."""
         data = {'result': 'test'}
         params = {'preset': 'deep_work'}
-        cache_manager.set_cache('analyze_quality', data, params)
 
-        call_args = mock_db.ai_cache.update_one.call_args[0][1]['$set']
-        assert call_args['cache_key'] is not None
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            manager.set_cache('analyze_quality', data, params)
 
-    def test_set_cache_marks_not_invalidated(self, cache_manager, mock_db):
-        """Should set invalidated to False."""
-        data = {'result': 'test'}
-        cache_manager.set_cache('morning_briefing', data)
-
-        call_args = mock_db.ai_cache.update_one.call_args[0][1]['$set']
-        assert call_args['invalidated'] is False
+        call_args = mock_database.set_cache.call_args[0]
+        assert call_args[2] is not None  # cache_key
 
 
 class TestInvalidateAll:
     """Test cache invalidation functionality."""
 
-    def test_invalidate_all_updates_all(self, cache_manager, mock_db):
-        """Should mark all caches as invalidated."""
-        mock_db.ai_cache.update_many.return_value = MagicMock(modified_count=5)
+    def test_invalidate_all_calls_database(self, mock_database):
+        """Should call database.invalidate_all_cache."""
+        mock_database.invalidate_all_cache.return_value = 5
 
-        result = cache_manager.invalidate_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.invalidate_all()
 
-        mock_db.ai_cache.update_many.assert_called_once_with(
-            {},
-            {'$set': {'invalidated': True}}
-        )
+        mock_database.invalidate_all_cache.assert_called_once()
         assert result == 5
 
-    def test_invalidate_all_returns_count(self, cache_manager, mock_db):
+    def test_invalidate_all_returns_count(self, mock_database):
         """Should return number of invalidated entries."""
-        mock_db.ai_cache.update_many.return_value = MagicMock(modified_count=10)
+        mock_database.invalidate_all_cache.return_value = 10
 
-        result = cache_manager.invalidate_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.invalidate_all()
 
         assert result == 10
 
@@ -197,20 +191,26 @@ class TestInvalidateAll:
 class TestClearAll:
     """Test cache clearing functionality."""
 
-    def test_clear_all_deletes_all(self, cache_manager, mock_db):
-        """Should delete all cache entries."""
-        mock_db.ai_cache.delete_many.return_value = MagicMock(deleted_count=8)
+    def test_clear_all_calls_database(self, mock_database):
+        """Should call database.clear_all_cache."""
+        mock_database.clear_all_cache.return_value = 8
 
-        result = cache_manager.clear_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.clear_all()
 
-        mock_db.ai_cache.delete_many.assert_called_once_with({})
+        mock_database.clear_all_cache.assert_called_once()
         assert result == 8
 
-    def test_clear_all_returns_count(self, cache_manager, mock_db):
+    def test_clear_all_returns_count(self, mock_database):
         """Should return number of deleted entries."""
-        mock_db.ai_cache.delete_many.return_value = MagicMock(deleted_count=15)
+        mock_database.clear_all_cache.return_value = 15
 
-        result = cache_manager.clear_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.clear_all()
 
         assert result == 15
 
@@ -218,52 +218,45 @@ class TestClearAll:
 class TestGetStatus:
     """Test cache status functionality."""
 
-    def test_get_status_returns_counts(self, cache_manager, mock_db):
+    def test_get_status_returns_counts(self, mock_database):
         """Should return cache statistics."""
-        now = datetime.now()
-        mock_db.ai_cache.find.return_value = [
-            {
-                'cache_type': 'morning_briefing',
-                'cache_key': None,
-                'generated_at': now - timedelta(hours=1),
-                'expires_at': now + timedelta(hours=3),
-                'invalidated': False
-            },
-            {
-                'cache_type': 'evening_review',
-                'cache_key': None,
-                'generated_at': now - timedelta(hours=2),
-                'expires_at': now - timedelta(hours=1),  # Expired
-                'invalidated': False
-            }
-        ]
+        mock_database.get_cache_status.return_value = {
+            'total_cached': 2,
+            'valid': 1,
+            'invalidated': 1,
+            'caches': []
+        }
 
-        result = cache_manager.get_status()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_status()
 
         assert result['total_cached'] == 2
-        assert result['valid'] == 1  # Only one not expired
+        assert result['valid'] == 1
         assert 'caches' in result
 
-    def test_get_status_cache_details(self, cache_manager, mock_db):
+    def test_get_status_cache_details(self, mock_database):
         """Should return details for each cache."""
-        now = datetime.now()
-        mock_db.ai_cache.find.return_value = [
-            {
-                'cache_type': 'morning_briefing',
-                'cache_key': 'abc123',
-                'generated_at': now,
-                'expires_at': now + timedelta(hours=4),
-                'invalidated': False
-            }
-        ]
+        mock_database.get_cache_status.return_value = {
+            'total_cached': 1,
+            'valid': 1,
+            'caches': [{
+                'type': 'morning_briefing',
+                'key': 'abc123',
+                'generated_at': datetime.now().isoformat(),
+                'valid': True
+            }]
+        }
 
-        result = cache_manager.get_status()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_status()
 
         assert len(result['caches']) == 1
         cache_entry = result['caches'][0]
         assert cache_entry['type'] == 'morning_briefing'
-        assert cache_entry['key'] == 'abc123'
-        assert cache_entry['valid'] is True
 
 
 class TestGenerateKey:
@@ -300,41 +293,56 @@ class TestGenerateKey:
 class TestErrorHandling:
     """Test error handling in cache operations."""
 
-    def test_get_cached_handles_error(self, cache_manager, mock_db):
+    def test_get_cached_handles_error(self, mock_database):
         """get_cached should return None on error."""
-        mock_db.ai_cache.find_one.side_effect = Exception("DB error")
+        mock_database.get_cached.side_effect = Exception("DB error")
 
-        result = cache_manager.get_cached('morning_briefing')
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_cached('morning_briefing')
 
         assert result is None
 
-    def test_set_cache_handles_error(self, cache_manager, mock_db):
+    def test_set_cache_handles_error(self, mock_database):
         """set_cache should not raise on error."""
-        mock_db.ai_cache.update_one.side_effect = Exception("DB error")
+        mock_database.set_cache.side_effect = Exception("DB error")
 
-        # Should not raise
-        cache_manager.set_cache('morning_briefing', {'data': 'test'})
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            # Should not raise
+            manager.set_cache('morning_briefing', {'data': 'test'})
 
-    def test_invalidate_all_handles_error(self, cache_manager, mock_db):
+    def test_invalidate_all_handles_error(self, mock_database):
         """invalidate_all should return 0 on error."""
-        mock_db.ai_cache.update_many.side_effect = Exception("DB error")
+        mock_database.invalidate_all_cache.side_effect = Exception("DB error")
 
-        result = cache_manager.invalidate_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.invalidate_all()
 
         assert result == 0
 
-    def test_clear_all_handles_error(self, cache_manager, mock_db):
+    def test_clear_all_handles_error(self, mock_database):
         """clear_all should return 0 on error."""
-        mock_db.ai_cache.delete_many.side_effect = Exception("DB error")
+        mock_database.clear_all_cache.side_effect = Exception("DB error")
 
-        result = cache_manager.clear_all()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.clear_all()
 
         assert result == 0
 
-    def test_get_status_handles_error(self, cache_manager, mock_db):
+    def test_get_status_handles_error(self, mock_database):
         """get_status should return error dict on failure."""
-        mock_db.ai_cache.find.side_effect = Exception("DB error")
+        mock_database.get_cache_status.side_effect = Exception("DB error")
 
-        result = cache_manager.get_status()
+        with patch('models.ai_analyzer.database', mock_database):
+            from models.ai_analyzer import CacheManager
+            manager = CacheManager()
+            result = manager.get_status()
 
         assert 'error' in result

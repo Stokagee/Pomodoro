@@ -1,11 +1,13 @@
 """
 Web App specific pytest fixtures.
-Provides Flask app and test client with mocked MongoDB.
+Provides Flask app and test client with mocked PostgreSQL.
 """
 import pytest
 import sys
 import os
 import json
+from unittest.mock import MagicMock, patch
+from contextlib import contextmanager
 
 # Get absolute path and add to sys.path for imports
 WEB_DIR = os.path.join(os.path.dirname(__file__), '..', '..', 'web')
@@ -35,16 +37,34 @@ def web_config():
 
 
 @pytest.fixture
-def app(mock_db, monkeypatch):
-    """Create Flask app with mocked MongoDB."""
+def app(mock_db_data, monkeypatch):
+    """Create Flask app with mocked PostgreSQL."""
     _add_web_to_path()
 
-    # Patch the database module before importing app
+    # Create mock pool
+    from tests.conftest import MockPool
+    mock_pool = MockPool(mock_db_data)
+
+    # Mock psycopg2 imports before importing database module
+    mock_psycopg2 = MagicMock()
+    mock_psycopg2.pool.ThreadedConnectionPool = MagicMock(return_value=mock_pool)
+    monkeypatch.setitem(sys.modules, 'psycopg2', mock_psycopg2)
+    monkeypatch.setitem(sys.modules, 'psycopg2.pool', mock_psycopg2.pool)
+    monkeypatch.setitem(sys.modules, 'psycopg2.sql', MagicMock())
+    monkeypatch.setitem(sys.modules, 'psycopg2.extras', MagicMock())
+
+    # Mock pgvector
+    mock_pgvector = MagicMock()
+    mock_pgvector.psycopg2.register_vector = MagicMock()
+    monkeypatch.setitem(sys.modules, 'pgvector', mock_pgvector)
+    monkeypatch.setitem(sys.modules, 'pgvector.psycopg2', mock_pgvector.psycopg2)
+
+    # Now import and patch the database module
     import models.database as db_module
 
-    # Mock the MongoDB connection
-    monkeypatch.setattr(db_module, 'db', mock_db)
-    monkeypatch.setattr(db_module, 'client', mock_db.client)
+    # Patch the pool
+    monkeypatch.setattr(db_module, '_pool', mock_pool)
+    monkeypatch.setattr(db_module, 'get_pool', lambda: mock_pool)
 
     # Import app after patching
     from app import app as flask_app

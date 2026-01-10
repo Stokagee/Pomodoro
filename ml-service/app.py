@@ -8,11 +8,23 @@ from flask import Flask, jsonify, request, Response
 from flask_cors import CORS
 from dotenv import load_dotenv
 from prometheus_flask_exporter import PrometheusMetrics
-from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from models import ProductivityAnalyzer, PresetRecommender, SessionPredictor, BurnoutPredictor, FocusOptimizer, SessionQualityPredictor, PatternAnomalyDetector
 from models.ai_challenge_generator import AIChallengeGenerator
 from models.ai_analyzer import AIAnalyzer, CacheManager
+
+# Structured logging for Loki
+from utils.logger import logger
+
+# Centralized Prometheus metrics
+from utils.metrics import (
+    ml_info,
+    PREDICTION_REQUESTS, PREDICTION_ERRORS, PREDICTION_DURATION,
+    AI_REQUESTS, AI_REQUEST_DURATION, AI_ERRORS,
+    AI_TOKENS_INPUT, AI_TOKENS_OUTPUT, AI_COST_USD,
+    CACHE_HITS, CACHE_MISSES, SESSIONS_ANALYZED
+)
 
 # Import PostgreSQL database module
 import db as database
@@ -33,69 +45,12 @@ def prometheus_metrics():
     """Prometheus metrics endpoint"""
     return Response(generate_latest(), mimetype=CONTENT_TYPE_LATEST)
 
-# Application info
-ml_info = Info('pomodoro_ml', 'Pomodoro ML Service Information')
+# Set application info
 ml_info.info({
     'version': '1.0',
     'service': 'pomodoro-ml',
     'ollama_model': os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')
 })
-
-# Custom ML metrics
-PREDICTION_REQUESTS = Counter(
-    'ml_prediction_requests_total',
-    'Total prediction requests',
-    ['prediction_type']
-)
-
-PREDICTION_ERRORS = Counter(
-    'ml_prediction_errors_total',
-    'Total prediction errors',
-    ['prediction_type', 'error_type']
-)
-
-PREDICTION_DURATION = Histogram(
-    'ml_prediction_duration_seconds',
-    'Duration of ML predictions',
-    ['prediction_type'],
-    buckets=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0]
-)
-
-AI_REQUESTS = Counter(
-    'ml_ai_requests_total',
-    'Total AI (Ollama) requests',
-    ['endpoint']
-)
-
-AI_REQUEST_DURATION = Histogram(
-    'ml_ai_request_duration_seconds',
-    'Duration of AI (Ollama) requests',
-    ['endpoint'],
-    buckets=[1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 180.0]
-)
-
-AI_ERRORS = Counter(
-    'ml_ai_errors_total',
-    'Total AI (Ollama) errors',
-    ['endpoint', 'error_type']
-)
-
-SESSIONS_ANALYZED = Gauge(
-    'ml_sessions_analyzed_count',
-    'Number of sessions available for analysis'
-)
-
-CACHE_HITS = Counter(
-    'ml_cache_hits_total',
-    'Total cache hits',
-    ['cache_type']
-)
-
-CACHE_MISSES = Counter(
-    'ml_cache_misses_total',
-    'Total cache misses',
-    ['cache_type']
-)
 
 # Database connection status
 db_connected = False
@@ -114,15 +69,18 @@ def init_db():
         db_connected = database.init_db()
         if db_connected:
             print("ML Service connected to PostgreSQL")
+            logger.db_connected("PostgreSQL")
 
             # Initialize AI Analyzer
             ai_analyzer = AIAnalyzer()
             print("AI Analyzer initialized")
+            logger.info("STARTUP", "AI Analyzer initialized", {"model": os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')})
 
             # Clear AI cache on startup (docker-compose up)
             try:
                 deleted = database.clear_all_cache()
                 print(f"AI cache cleared on startup ({deleted} entries)")
+                logger.cache_invalidated("all", "startup", deleted)
             except Exception as e:
                 print(f"Warning: Could not clear AI cache: {e}")
 
@@ -130,6 +88,7 @@ def init_db():
         return False
     except Exception as e:
         print(f"PostgreSQL connection failed: {e}")
+        logger.db_error("init", str(e))
         return False
 
 
@@ -139,6 +98,63 @@ def get_sessions():
         return []
 
     return database.get_sessions(completed_only=True)
+
+
+def get_rich_context_for_ai():
+    """
+    Načte bohatý kontext pro AI doporučení.
+    Obsahuje týdenní statistiky, produktivitu a rozložení kategorií.
+    """
+    if not db_connected:
+        return {
+            'weekly_total': 0,
+            'avg_productivity': 0,
+            'categories': {},
+            'streak': 0
+        }
+
+    try:
+        sessions = database.get_sessions_with_notes(7)  # posledních 7 dní
+
+        # Spočítat statistiky
+        categories = {}
+        total_productivity = 0
+        productivity_count = 0
+
+        for s in sessions:
+            cat = s.get('category', 'Other')
+            categories[cat] = categories.get(cat, 0) + 1
+            if s.get('productivity_rating'):
+                total_productivity += s['productivity_rating']
+                productivity_count += 1
+
+        # Spočítat streak (po sobě jdoucí dny s alespoň 1 session)
+        from datetime import datetime, timedelta
+        streak = 0
+        today = datetime.now().date()
+        dates_with_sessions = set(s.get('date') for s in sessions if s.get('date'))
+
+        for i in range(30):  # max 30 dní zpět
+            check_date = (today - timedelta(days=i)).strftime('%Y-%m-%d')
+            if check_date in dates_with_sessions:
+                streak += 1
+            elif i > 0:  # První den (dnes) může být prázdný
+                break
+
+        return {
+            'weekly_total': len(sessions),
+            'avg_productivity': round(total_productivity / productivity_count, 1) if productivity_count > 0 else 0,
+            'categories': categories,
+            'streak': streak
+        }
+    except Exception as e:
+        print(f"Error getting rich context: {e}")
+        return {
+            'weekly_total': 0,
+            'avg_productivity': 0,
+            'categories': {},
+            'streak': 0
+        }
 
 
 @app.route('/api/health')
@@ -231,10 +247,22 @@ def recommendation():
         SESSIONS_ANALYZED.set(len(sessions))
         recommender = PresetRecommender(sessions)
         rec = recommender.recommend(category=category)
+        latency_ms = int((time.time() - start_time) * 1000)
         PREDICTION_DURATION.labels(prediction_type='recommendation').observe(time.time() - start_time)
+
+        # === STRUCTURED LOGGING ===
+        logger.ml_recommendation(
+            preset=rec.get('recommended_preset', 'unknown'),
+            confidence=rec.get('confidence', 0),
+            reason=rec.get('reason', ''),
+            latency_ms=latency_ms,
+            category=category
+        )
+
         return jsonify(rec)
     except Exception as e:
         PREDICTION_ERRORS.labels(prediction_type='recommendation', error_type=type(e).__name__).inc()
+        logger.error("ML_ERROR", f"Recommendation failed: {str(e)}", error={"type": type(e).__name__, "message": str(e)})
         raise
 
 
@@ -319,9 +347,20 @@ def burnout_risk():
     Returns:
         dict: Risk score, level, factors, and recommendations
     """
+    start_time = time.time()
     sessions = get_sessions()
     predictor = BurnoutPredictor(sessions)
     result = predictor.predict_burnout()
+    latency_ms = int((time.time() - start_time) * 1000)
+
+    # === STRUCTURED LOGGING ===
+    logger.burnout_risk(
+        risk_level=result.get('risk_level', 'unknown'),
+        risk_score=result.get('risk_score', 0),
+        top_factors=result.get('risk_factors', []),
+        latency_ms=latency_ms
+    )
+
     return jsonify(result)
 
 
@@ -475,12 +514,25 @@ def detect_anomalies():
         dict: Detected anomalies with severity, recommendations, and proactive tips
     """
     try:
+        start_time = time.time()
         sessions = get_sessions()
         detector = PatternAnomalyDetector(sessions)
         result = detector.detect_all()
+        latency_ms = int((time.time() - start_time) * 1000)
+
+        # === STRUCTURED LOGGING ===
+        for anomaly in result.get('anomalies', []):
+            logger.anomaly_detected(
+                anomaly_type=anomaly.get('type', 'unknown'),
+                severity=anomaly.get('severity', 'low'),
+                description=anomaly.get('description', ''),
+                recommendation=anomaly.get('recommendation')
+            )
+
         return jsonify(result)
     except Exception as e:
         print(f"Error in detect-anomalies: {e}")
+        logger.error("ML_ERROR", f"Anomaly detection failed: {str(e)}", error={"type": type(e).__name__, "message": str(e)})
         return jsonify({
             'error': str(e),
             'anomalies_detected': 0,
@@ -973,11 +1025,36 @@ def ai_next_session_suggestion():
     from datetime import datetime
 
     try:
+        # Základní kontext z parametrů
+        hour = request.args.get('hour', datetime.now().hour, type=int)
+        day_of_week = datetime.now().weekday()  # 0=Po, 6=Ne
+        day_names = ['Pondeli', 'Utery', 'Streda', 'Ctvrtek', 'Patek', 'Sobota', 'Nedele']
+
+        # Update categories from request (from user's config.json)
+        categories_param = request.args.get('categories', '')
+        if categories_param:
+            categories = [c.strip() for c in categories_param.split(',') if c.strip()]
+            if categories:
+                ai_generator.update_categories(categories)
+                print(f"Updated AI categories from request: {categories}")
+
+        # Bohatý kontext z databáze
+        rich_context = get_rich_context_for_ai()
+
         context = {
             'last_category': request.args.get('category', ''),
             'last_task': request.args.get('task', ''),
-            'time_of_day': request.args.get('hour', datetime.now().hour, type=int),
-            'sessions_today': request.args.get('sessions', 0, type=int)
+            'time_of_day': hour,
+            'day_of_week': day_of_week,
+            'day_name': day_names[day_of_week],
+            'sessions_today': request.args.get('sessions', 0, type=int),
+            # Bohatší kontext
+            'weekly_stats': rich_context,
+            'user_profile': {
+                'role': 'Tester',
+                'style': 'pragmatic',
+                'goals': ['productivity', 'learning', 'balance']
+            }
         }
 
         result = ai_generator.suggest_next_session_topic(context)
@@ -989,6 +1066,91 @@ def ai_next_session_suggestion():
             request.args.get('category'),
             datetime.now().hour
         ))
+
+
+@app.route('/api/ai/expand-suggestion', methods=['POST'])
+def ai_expand_suggestion():
+    """
+    FocusAI: Expand a previous suggestion with more details
+
+    Expects JSON body:
+    {
+        "suggestion": {
+            "category": "Learning",
+            "topic": "Robot Framework basics",
+            "reason": "Improve automation skills"
+        },
+        "question_type": "resources|steps|time_estimate|connection"
+    }
+
+    Question types:
+    - resources: Learning materials, documentation, tutorials, YouTube
+    - steps: Concrete action steps (what to do)
+    - time_estimate: How long it takes (sessions/hours)
+    - connection: How it connects to job hunting/career goals
+
+    Returns:
+        dict: {
+            "answer": "Detailed answer with bullet points",
+            "type": "resources",
+            "icon": "📚",
+            "confidence": 0.85,
+            "ai_generated": true
+        }
+    """
+    try:
+        data = request.get_json() or {}
+        suggestion = data.get('suggestion', {})
+        question_type = data.get('question_type', 'resources')
+        category = suggestion.get('category', '')
+
+        if not suggestion.get('topic'):
+            return jsonify({
+                'error': 'Missing suggestion.topic',
+                'answer': 'Chybí téma k rozšíření.',
+                'confidence': 0
+            }), 400
+
+        # Get REAL user data from database
+        user_context = {}
+        try:
+            # Get sessions from last 30 days
+            all_sessions = database.get_sessions_with_notes(30)
+
+            # Filter sessions for the suggested category
+            category_sessions = [
+                s for s in all_sessions
+                if s.get('category', '').lower() == category.lower()
+            ]
+
+            # Also get all tasks for broader context
+            all_tasks = [s.get('task') for s in all_sessions if s.get('task')]
+
+            # Extract unique tools/technologies from tasks
+            user_tools = ['Postman', 'Robot Framework', 'DBeaver', 'SOAP UI']  # defaults
+
+            user_context = {
+                'recent_tasks': [s.get('task') for s in category_sessions if s.get('task')][:10],
+                'category_sessions': category_sessions[:5],
+                'user_tools': user_tools,
+                'all_recent_tasks': all_tasks[:20]  # broader context
+            }
+            print(f"User context for expand: {len(category_sessions)} sessions in '{category}'")
+        except Exception as e:
+            print(f"Warning: Could not get user context: {e}")
+
+        result = ai_generator.expand_suggestion(suggestion, question_type, user_context)
+        return jsonify(result)
+    except Exception as e:
+        print(f"Error in expand-suggestion: {e}")
+        return jsonify({
+            'answer': 'AI dočasně nedostupná. Zkus to později.',
+            'type': 'error',
+            'icon': '⚠️',
+            'confidence': 0,
+            'ai_generated': False,
+            'error': str(e)
+        }), 500
 
 
 @app.route('/api/ai/extract-topics', methods=['POST'])
@@ -1414,17 +1576,23 @@ def ai_learning_v2():
 def ai_invalidate_cache():
     """
     Invalidate all AI caches.
-    Called automatically when a new session is logged.
+    Called automatically when a new session is logged or when user requests new suggestion.
     """
-    if ai_analyzer is None:
-        return jsonify({'error': 'AI Analyzer not initialized'}), 503
+    total_invalidated = 0
 
     try:
-        invalidated = ai_analyzer.cache.invalidate_all()
+        # Invalidate ai_analyzer cache
+        if ai_analyzer is not None:
+            total_invalidated += ai_analyzer.cache.invalidate_all()
+
+        # Invalidate ai_generator cache (for next_session suggestions)
+        if ai_generator is not None:
+            total_invalidated += ai_generator.clear_cache()
+
         return jsonify({
             'status': 'invalidated',
-            'invalidated_count': invalidated,
-            'message': f'Invalidated {invalidated} cache entries'
+            'invalidated_count': total_invalidated,
+            'message': f'Invalidated {total_invalidated} cache entries'
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -232,8 +232,7 @@ class PomodoroCalendar {
 
     async fetchMLInsights(weekStart) {
         try {
-            // ML service runs on port 5001
-            const response = await fetch(`http://localhost:5001/api/weekly-insights/${weekStart}`, {
+            const response = await fetch(`/api/weekly-insights/${weekStart}`, {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' }
             });
@@ -249,7 +248,7 @@ class PomodoroCalendar {
             return {
                 predicted_sessions: null,
                 recommended_focus: null,
-                tip: 'ML service není dostupný. Zkontrolujte, zda běží na portu 5002.',
+                tip: 'ML service není dostupný.',
                 productivity_trend: null
             };
         }

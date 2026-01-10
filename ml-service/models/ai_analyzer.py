@@ -1,19 +1,36 @@
 """
 AI Analyzer - Full LLM-based analysis with session notes
-Uses Ollama for comprehensive analysis of user productivity patterns.
+Uses Ollama or Cloud AI (OpenAI/DeepSeek) for comprehensive analysis of user productivity patterns.
 """
 
 import os
 import json
 import logging
 import hashlib
+import time
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 
 # Import PostgreSQL database module
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import db as database
+
+# Import metrics
+try:
+    from utils.metrics import record_ai_usage, CACHE_HITS, CACHE_MISSES
+except ImportError:
+    # Fallback if metrics not available
+    def record_ai_usage(*args, **kwargs):
+        pass
+    CACHE_HITS = None
+    CACHE_MISSES = None
+
+# Structured logger for Loki
+try:
+    from utils.logger import logger as structured_logger
+except ImportError:
+    structured_logger = None
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +48,7 @@ class CacheManager:
         'analyze_quality': 0.5,  # 30 minutes
         'optimal_schedule': 4,
         'prediction': 2,
-        'learning': 24
+        'learning': 2  # Changed from 24h for more dynamic recommendations
     }
 
     def __init__(self):
@@ -262,18 +279,33 @@ class AIAnalyzer:
             'top_category': top_category
         }
 
-    def _call_llm(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+    def _call_llm(self, prompt: str, system_prompt: str = None, endpoint: str = 'unknown') -> Optional[str]:
         """Route LLM call to appropriate provider (Ollama or Cloud)."""
         if self.ai_provider == 'cloud':
-            return self._call_cloud_api(prompt, system_prompt)
+            return self._call_cloud_api(prompt, system_prompt, endpoint)
         else:
-            return self._call_ollama(prompt, system_prompt)
+            return self._call_ollama(prompt, system_prompt, endpoint)
 
-    def _call_cloud_api(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+    def _call_cloud_api(self, prompt: str, system_prompt: str = None, endpoint: str = 'unknown') -> Optional[str]:
         """Make a call to Cloud AI API (DeepSeek, OpenAI-compatible)."""
         if not self.cloud_api_key:
             logger.warning("Cloud AI API key not configured (AI_API_KEY)")
             return None
+
+        start_time = time.time()
+        input_tokens = 0
+        output_tokens = 0
+        error_type = None
+
+        # Log prompt being sent
+        if structured_logger:
+            structured_logger.ai_prompt(
+                endpoint=endpoint,
+                provider='cloud',
+                model=self.cloud_model,
+                prompt=prompt,
+                system_prompt=system_prompt
+            )
 
         try:
             import requests
@@ -300,22 +332,93 @@ class AIAnalyzer:
                 timeout=self.timeout
             )
 
+            duration = time.time() - start_time
+
             if response.status_code == 200:
                 result = response.json()
-                return result.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+                # Extract token usage from response
+                usage = result.get('usage', {})
+                input_tokens = usage.get('prompt_tokens', 0)
+                output_tokens = usage.get('completion_tokens', 0)
+
+                # Record metrics
+                record_ai_usage(
+                    provider='cloud',
+                    model=self.cloud_model,
+                    endpoint=endpoint,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    duration_seconds=duration
+                )
+
+                response_content = result.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+                # Log response received
+                if structured_logger:
+                    structured_logger.ai_response(
+                        endpoint=endpoint,
+                        provider='cloud',
+                        model=self.cloud_model,
+                        response=response_content,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        duration_seconds=duration
+                    )
+
+                logger.info(f"Cloud AI call: {endpoint}, tokens={input_tokens}+{output_tokens}, duration={duration:.2f}s")
+
+                return response_content
             else:
+                error_type = f"status_{response.status_code}"
                 logger.error(f"Cloud AI returned status {response.status_code}: {response.text}")
+                record_ai_usage(
+                    provider='cloud',
+                    model=self.cloud_model,
+                    endpoint=endpoint,
+                    duration_seconds=duration,
+                    error=error_type
+                )
                 return None
 
+        except requests.exceptions.Timeout:
+            error_type = 'timeout'
+            logger.error(f"Cloud AI timeout after {self.timeout}s")
+        except requests.exceptions.ConnectionError:
+            error_type = 'connection_error'
+            logger.error("Cloud AI connection error")
         except Exception as e:
+            error_type = type(e).__name__
             logger.error(f"Cloud AI call error: {e}")
-            return None
 
-    def _call_ollama(self, prompt: str, system_prompt: str = None) -> Optional[str]:
+        # Record error
+        record_ai_usage(
+            provider='cloud',
+            model=self.cloud_model,
+            endpoint=endpoint,
+            duration_seconds=time.time() - start_time,
+            error=error_type
+        )
+        return None
+
+    def _call_ollama(self, prompt: str, system_prompt: str = None, endpoint: str = 'unknown') -> Optional[str]:
         """Make a call to Ollama API (local)."""
         if not self.enabled:
             logger.warning("Ollama is disabled")
             return None
+
+        start_time = time.time()
+        error_type = None
+
+        # Log prompt being sent
+        if structured_logger:
+            structured_logger.ai_prompt(
+                endpoint=endpoint,
+                provider='ollama',
+                model=self.ollama_model,
+                prompt=prompt,
+                system_prompt=system_prompt
+            )
 
         try:
             import requests
@@ -339,16 +442,71 @@ class AIAnalyzer:
                 timeout=self.timeout
             )
 
+            duration = time.time() - start_time
+
             if response.status_code == 200:
                 result = response.json()
-                return result.get('message', {}).get('content', '')
+
+                # Ollama returns eval_count (output tokens) and prompt_eval_count (input tokens)
+                input_tokens = result.get('prompt_eval_count', 0)
+                output_tokens = result.get('eval_count', 0)
+
+                record_ai_usage(
+                    provider='ollama',
+                    model=self.ollama_model,
+                    endpoint=endpoint,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    duration_seconds=duration
+                )
+
+                response_content = result.get('message', {}).get('content', '')
+
+                # Log response received
+                if structured_logger:
+                    structured_logger.ai_response(
+                        endpoint=endpoint,
+                        provider='ollama',
+                        model=self.ollama_model,
+                        response=response_content,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        duration_seconds=duration
+                    )
+
+                logger.info(f"Ollama call: {endpoint}, tokens={input_tokens}+{output_tokens}, duration={duration:.2f}s")
+
+                return response_content
             else:
+                error_type = f"status_{response.status_code}"
                 logger.error(f"Ollama returned status {response.status_code}")
+                record_ai_usage(
+                    provider='ollama',
+                    model=self.ollama_model,
+                    endpoint=endpoint,
+                    duration_seconds=duration,
+                    error=error_type
+                )
                 return None
 
+        except requests.exceptions.Timeout:
+            error_type = 'timeout'
+            logger.error(f"Ollama timeout after {self.timeout}s")
+        except requests.exceptions.ConnectionError:
+            error_type = 'connection_error'
+            logger.error("Ollama connection error")
         except Exception as e:
+            error_type = type(e).__name__
             logger.error(f"Ollama call error: {e}")
-            return None
+
+        record_ai_usage(
+            provider='ollama',
+            model=self.ollama_model,
+            endpoint=endpoint,
+            duration_seconds=time.time() - start_time,
+            error=error_type
+        )
+        return None
 
     def _parse_json_response(self, response: str) -> Optional[Dict]:
         """Parse JSON from LLM response."""
@@ -527,7 +685,7 @@ class AIAnalyzer:
         if rag_context:
             prompt = f"{rag_context}\n\n{prompt}"
 
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='morning_briefing')
         result = self._parse_json_response(response)
 
         if result:
@@ -569,7 +727,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['evening'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='evening_review')
         result = self._parse_json_response(response)
 
         if result:
@@ -621,7 +779,7 @@ class AIAnalyzer:
         if rag_context:
             prompt = f"{rag_context}\n\n{prompt}"
 
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='analyze_burnout')
         result = self._parse_json_response(response)
 
         if result:
@@ -654,7 +812,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['anomaly'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='analyze_anomalies')
         result = self._parse_json_response(response)
 
         if result:
@@ -700,7 +858,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['quality'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='analyze_quality')
         result = self._parse_json_response(response)
 
         if result:
@@ -731,7 +889,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['schedule'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='optimal_schedule')
         result = self._parse_json_response(response)
 
         if result:
@@ -774,7 +932,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['integrated'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='integrated_insight')
         result = self._parse_json_response(response)
 
         if result:
@@ -819,7 +977,7 @@ class AIAnalyzer:
         }
 
         prompt = self.prompts['learning'].format(**context)
-        response = self._call_llm(prompt, self._get_system_prompt())
+        response = self._call_llm(prompt, self._get_system_prompt(), endpoint='learning')
         result = self._parse_json_response(response)
 
         if result:

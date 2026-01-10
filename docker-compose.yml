@@ -127,6 +127,43 @@ services:
     networks:
       - pomodoro-network
 
+  # =============================================================================
+  # LOKI LOGGING STACK
+  # =============================================================================
+
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: pomodoro-loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki_data:/loki
+    command: -config.file=/etc/loki/config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: pomodoro-promtail
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/config.yaml
+    depends_on:
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pomodoro-network
+
   grafana:
     image: grafana/grafana:11.0.0
     container_name: pomodoro-grafana
@@ -145,6 +182,7 @@ services:
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
     depends_on:
       - prometheus
+      - loki
     restart: unless-stopped
     networks:
       - pomodoro-network
@@ -156,6 +194,8 @@ services:
       - "9187:9187"
     environment:
       - DATA_SOURCE_NAME=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro?sslmode=disable
+    volumes:
+      - ./monitoring/postgres-exporter/postgres_exporter.yml:/postgres_exporter.yml:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -189,3 +229,4 @@ volumes:
   embedding_cache:
   prometheus_data:
   grafana_data:
+  loki_data:

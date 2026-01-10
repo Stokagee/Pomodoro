@@ -1051,6 +1051,19 @@ def get_user_profile():
         profile = dict(profile)
         profile['_id'] = str(profile['id'])
 
+        # Vypočítat level prahy pro progress bar
+        total_xp = profile.get('total_xp_earned') or profile.get('xp') or 0
+        level = profile.get('level') or 1
+
+        # XP prahy: level N vyžaduje ((N-1)^2 * 100) XP, level N+1 vyžaduje (N^2 * 100) XP
+        profile['current_level_xp'] = ((level - 1) ** 2) * 100
+        profile['next_level_xp'] = (level ** 2) * 100
+        profile['xp_to_next_level'] = max(0, profile['next_level_xp'] - total_xp)
+
+        # Zajistit že total_xp_earned má hodnotu pro zobrazení
+        if profile.get('total_xp_earned') is None:
+            profile['total_xp_earned'] = profile.get('xp') or 0
+
     return profile
 
 
@@ -1078,7 +1091,12 @@ def add_xp(amount, source='session'):
             old_xp = profile['xp']
 
         new_xp = old_xp + amount
-        total_xp = (profile.get('total_xp_earned', 0) or 0) + amount
+
+        # Bezpečné zpracování NULL - fallback na xp pole pokud total_xp_earned je NULL
+        current_total = profile.get('total_xp_earned')
+        if current_total is None:
+            current_total = profile.get('xp', 0) or 0
+        total_xp = current_total + amount
 
         # Calculate new level (simple formula: level = sqrt(total_xp / 100) + 1)
         import math
@@ -1117,6 +1135,52 @@ def calculate_level_from_xp(xp: int) -> dict:
         'xp_for_next_level': xp_needed,
         'progress': round(progress, 1)
     }
+
+
+def fix_user_profile_data():
+    """Oprava nekonzistentních XP/level dat.
+
+    Použije se při startu aplikace k opravě případných nekonzistencí:
+    - Pokud total_xp_earned je NULL, nastaví se na hodnotu xp
+    - Přepočítá level podle vzorce sqrt(total_xp/100) + 1
+    """
+    import math
+    with get_cursor() as cur:
+        # Nejdřív získáme aktuální data
+        cur.execute("""
+            SELECT xp, total_xp_earned, level
+            FROM user_profile
+            WHERE user_id = 'default'
+        """)
+        profile = cur.fetchone()
+
+        if profile:
+            # Určíme správnou hodnotu total_xp - použijeme větší z obou hodnot
+            xp_field = profile['xp'] or 0
+            total_field = profile['total_xp_earned'] or 0
+            total_xp = max(xp_field, total_field)
+
+            # Vypočítáme správný level
+            correct_level = int(math.sqrt(total_xp / 100)) + 1
+
+            # Aktualizujeme data pokud je potřeba
+            cur.execute("""
+                UPDATE user_profile
+                SET
+                    total_xp_earned = %s,
+                    level = %s,
+                    updated_at = %s
+                WHERE user_id = 'default'
+            """, (total_xp, correct_level, datetime.now()))
+
+            return {
+                'fixed': True,
+                'total_xp': total_xp,
+                'new_level': correct_level,
+                'old_level': profile['level']
+            }
+
+    return {'fixed': False, 'reason': 'No profile found'}
 
 
 # =============================================================================

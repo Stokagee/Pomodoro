@@ -4,6 +4,10 @@ Optimized for IT professionals with 52/17 Deep Work mode
 Docker + MongoDB + ML Integration
 """
 
+# Eventlet monkey patching MUST be first before any other imports
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import io
 import csv
@@ -14,6 +18,9 @@ from flask_socketio import SocketIO, emit
 from pathlib import Path
 from dotenv import load_dotenv
 from prometheus_flask_exporter import PrometheusMetrics
+
+# Structured logging for Loki
+from utils.logger import logger
 from prometheus_client import Counter, Histogram, Gauge, Info, generate_latest, CONTENT_TYPE_LATEST
 import time
 
@@ -36,7 +43,7 @@ from models.database import (
     init_achievements, get_all_achievements, check_and_unlock_achievements,
     get_achievements_summary, ACHIEVEMENTS_DEFINITIONS,
     # XP/Leveling System
-    get_user_profile, add_xp, calculate_level_from_xp,
+    get_user_profile, add_xp, calculate_level_from_xp, fix_user_profile_data,
     # Streak Protection
     use_streak_freeze, toggle_vacation_mode, check_streak_with_protection,
     # Category Skills
@@ -55,7 +62,7 @@ from models.database import (
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'pomodoro-secret-key-2025')
-socketio = SocketIO(app, cors_allowed_origins="*")
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -531,6 +538,43 @@ def api_log_session():
     except Exception:
         pass  # Non-blocking, don't fail session log if cache invalidation fails
 
+    # === STRUCTURED LOGGING ===
+    logger.session_completed(
+        session_id=session_id,
+        preset=preset,
+        category=category,
+        duration=int(duration),
+        rating=rating,
+        completed=bool(data.get('completed', True)),
+        xp_earned=base_xp,
+        achievements_count=len(newly_unlocked)
+    )
+
+    # Log achievements
+    for achievement in newly_unlocked:
+        logger.achievement_unlocked(
+            achievement_id=achievement.get('id', ''),
+            name=achievement.get('name', ''),
+            xp_reward=achievement.get('xp_reward', 0),
+            category=achievement.get('category')
+        )
+
+    # Log level up
+    if xp_result.get('level_up'):
+        logger.level_up(
+            old_level=xp_result.get('old_level', 1),
+            new_level=xp_result.get('new_level', 1),
+            new_title=xp_result.get('new_title', ''),
+            total_xp=xp_result.get('total_xp', 0)
+        )
+
+    # Log challenge completion
+    if challenge_result.get('completed'):
+        logger.challenge_completed(
+            challenge_type='daily',
+            xp_reward=challenge_result.get('xp_reward', 0)
+        )
+
     return jsonify({
         'status': 'ok',
         'session_id': session_id,
@@ -637,6 +681,32 @@ def api_burnout_risk():
         'risk_level': 'unknown',
         'risk_score': 0
     }), 503
+
+
+@app.route('/api/weekly-insights/<week_start>')
+def weekly_insights_proxy(week_start):
+    """Proxy pro ML weekly insights pro kalendář"""
+    try:
+        response = requests.get(
+            f"{ML_SERVICE_URL}/api/weekly-insights/{week_start}",
+            timeout=5
+        )
+        if response.ok:
+            return jsonify(response.json())
+        return jsonify({
+            'predicted_sessions': None,
+            'recommended_focus': None,
+            'tip': 'ML service nedostupný.',
+            'productivity_trend': None
+        }), response.status_code
+    except Exception as e:
+        print(f"ML weekly insights service unavailable: {e}")
+        return jsonify({
+            'predicted_sessions': None,
+            'recommended_focus': None,
+            'tip': 'ML service není dostupný.',
+            'productivity_trend': None
+        }), 503
 
 
 @app.route('/api/anomalies')
@@ -836,6 +906,14 @@ def api_set_focus():
     notes = str(data.get('notes', ''))[:1000]
 
     result = set_daily_focus(target_date, valid_themes, notes)
+
+    # === STRUCTURED LOGGING ===
+    logger.daily_focus_set(
+        date=date_str,
+        themes=valid_themes,
+        total_planned=sum(t.get('planned_sessions', 0) for t in valid_themes),
+        notes=notes
+    )
 
     return jsonify({
         'success': True,
@@ -1195,6 +1273,16 @@ def api_add_xp():
         return jsonify({'error': 'Invalid XP amount (1-10000)'}), 400
 
     result = add_xp(int(amount), source)
+    return jsonify({
+        'success': True,
+        'result': result
+    })
+
+
+@app.route('/api/xp/fix', methods=['POST'])
+def api_fix_xp():
+    """Fix inconsistent XP/level data"""
+    result = fix_user_profile_data()
     return jsonify({
         'success': True,
         'result': result
@@ -1735,7 +1823,7 @@ def api_ai_learning_recommendations():
         if response.status_code == 200:
             result = response.json()
             # Cache for 24 hours
-            cache_ai_recommendation('learning', result, hours=24)
+            cache_ai_recommendation('learning', result, ttl_hours=24)
             return jsonify({
                 **result,
                 'from_cache': False
@@ -1773,6 +1861,7 @@ def api_ai_next_session():
     from datetime import datetime
     context = get_last_session_context()
     today_stats = get_today_stats()
+    config = load_config()
 
     try:
         response = requests.get(
@@ -1781,14 +1870,15 @@ def api_ai_next_session():
                 'category': context.get('last_category', ''),
                 'task': context.get('last_task', ''),
                 'hour': datetime.now().hour,
-                'sessions': today_stats.get('sessions_count', 0)
+                'sessions': today_stats.get('sessions_count', 0),
+                'categories': ','.join(config.get('categories', []))  # Pass user's categories
             },
             timeout=180
         )
         if response.status_code == 200:
             result = response.json()
             # Cache for 15 minutes
-            cache_ai_recommendation('next_session', result, hours=0.25)
+            cache_ai_recommendation('next_session', result, ttl_hours=0.25)
             return jsonify({
                 **result,
                 'from_cache': False
@@ -1798,6 +1888,67 @@ def api_ai_next_session():
 
     # Fallback suggestion
     return jsonify(_get_fallback_session_suggestion())
+
+
+@app.route('/api/ai/expand-suggestion', methods=['POST'])
+def api_ai_expand_suggestion():
+    """FocusAI: Expand a suggestion with more details.
+
+    Use this after getting a suggestion from /api/ai/next-session
+    to get more detailed information about the suggested topic.
+
+    Request body:
+    {
+        "suggestion": {
+            "category": "Learning",
+            "topic": "Robot Framework basics",
+            "reason": "Improve automation skills"
+        },
+        "question_type": "resources|steps|time_estimate|connection"
+    }
+
+    Question types:
+    - resources: Learning materials, documentation, tutorials
+    - steps: Concrete action steps
+    - time_estimate: How long it takes
+    - connection: How it connects to career goals
+    """
+    data = request.json or {}
+    suggestion = data.get('suggestion', {})
+    question_type = data.get('question_type', 'resources')
+
+    if not suggestion.get('topic'):
+        return jsonify({
+            'error': 'Missing suggestion.topic',
+            'answer': 'Chybí téma k rozšíření.',
+            'confidence': 0
+        }), 400
+
+    try:
+        response = requests.post(
+            f"{ML_SERVICE_URL}/api/ai/expand-suggestion",
+            json={
+                'suggestion': suggestion,
+                'question_type': question_type
+            },
+            timeout=180
+        )
+        if response.status_code == 200:
+            return jsonify(response.json())
+        else:
+            print(f"AI expand suggestion failed: {response.status_code}")
+    except Exception as e:
+        print(f"AI expand suggestion error: {e}")
+
+    # Fallback response
+    return jsonify({
+        'answer': 'AI dočasně nedostupná. Zkus to později.',
+        'type': question_type,
+        'icon': '⚠️',
+        'confidence': 0,
+        'ai_generated': False,
+        'fallback': True
+    })
 
 
 @app.route('/api/ai/extract-topics', methods=['POST'])
@@ -2126,6 +2277,7 @@ def api_save_start_day():
 def handle_connect():
     """Client connected"""
     ACTIVE_USERS.inc()
+    logger.websocket_event('connect')
     emit('connected', {'status': 'connected'})
 
 
@@ -2133,6 +2285,7 @@ def handle_connect():
 def handle_disconnect():
     """Client disconnected"""
     ACTIVE_USERS.dec()
+    logger.websocket_event('disconnect')
 
 
 @socketio.on('timer_complete')
@@ -2235,9 +2388,17 @@ if __name__ == '__main__':
     print("=" * 50)
 
     if init_db():
-        print("  MongoDB: Connected")
+        print("  Database: Connected")
+        logger.info("STARTUP", "Database connected", {"db_type": "PostgreSQL"})
+        # Oprava případných nekonzistencí v XP/level datech
+        try:
+            fix_result = fix_user_profile_data()
+            if fix_result.get('fixed'):
+                print(f"  XP/Level: Fixed (level {fix_result['old_level']} -> {fix_result['new_level']}, total_xp={fix_result['total_xp']})")
+        except Exception as e:
+            print(f"  XP/Level: Skipped fix ({e})")
     else:
-        print("  MongoDB: Connection failed (using fallback)")
+        print("  Database: Connection failed (using fallback)")
 
     print(f"\n  Open in browser: http://localhost:5000")
     print(f"\n  Presets:")
@@ -2246,4 +2407,5 @@ if __name__ == '__main__':
         print(f"    - {preset['name']}: {preset['work_minutes']}/{preset['break_minutes']} min")
     print("\n" + "=" * 50 + "\n")
 
-    socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)
+    debug_mode = os.getenv('FLASK_ENV') == 'development' and os.getenv('FLASK_DEBUG', '0') == '1'
+    socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode, allow_unsafe_werkzeug=True)

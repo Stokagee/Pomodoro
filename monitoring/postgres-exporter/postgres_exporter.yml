@@ -1,0 +1,14 @@
+# Postgres Exporter Configuration
+# https://github.com/prometheus-community/postgres_exporter
+
+# Auth module configuration (uses DATA_SOURCE_NAME env var by default)
+auth_modules: {}
+
+# Custom queries can be added here if needed
+# Example:
+# pg_pomodoro_sessions:
+#   query: "SELECT COUNT(*) as total_sessions FROM sessions WHERE date = CURRENT_DATE"
+#   metrics:
+#     - total_sessions:
+#         usage: "GAUGE"
+#         description: "Total pomodoro sessions today"

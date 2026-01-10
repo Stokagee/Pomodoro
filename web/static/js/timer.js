@@ -1434,6 +1434,173 @@ function showToast(message, type = 'info') {
 }
 
 // =============================================================================
+// EXPAND SUGGESTION FUNCTIONS - Follow-up questions for AI recommendations
+// =============================================================================
+
+let expandSectionOpen = false;
+
+/**
+ * Toggle the expand section visibility
+ */
+function toggleExpandSection() {
+    const buttons = document.getElementById('expand-buttons');
+    const icon = document.getElementById('expand-icon');
+    const answer = document.getElementById('expand-answer');
+
+    if (!buttons || !icon) return;
+
+    expandSectionOpen = !expandSectionOpen;
+
+    if (expandSectionOpen) {
+        buttons.classList.remove('hidden');
+        icon.textContent = '▼';
+    } else {
+        buttons.classList.add('hidden');
+        answer.classList.add('hidden');
+        icon.textContent = '▶';
+    }
+}
+
+/**
+ * Expand the current AI suggestion with more details
+ * @param {string} questionType - Type of question: resources, steps, time_estimate, connection
+ */
+async function expandSuggestion(questionType) {
+    if (!currentAISuggestion) {
+        showToast('Nejdříve získej doporučení', 'info');
+        return;
+    }
+
+    const answerDiv = document.getElementById('expand-answer');
+    const loadingDiv = document.getElementById('expand-loading');
+    const contentDiv = document.getElementById('expand-content');
+
+    if (!answerDiv || !loadingDiv || !contentDiv) return;
+
+    // Show loading state
+    answerDiv.classList.remove('hidden');
+    loadingDiv.classList.remove('hidden');
+    contentDiv.classList.add('hidden');
+
+    try {
+        const response = await fetch('/api/ai/expand-suggestion', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                suggestion: {
+                    category: currentAISuggestion.category,
+                    topic: currentAISuggestion.topic,
+                    reason: currentAISuggestion.reason
+                },
+                question_type: questionType
+            })
+        });
+
+        const data = await response.json();
+
+        if (data && data.answer) {
+            displayExpandedAnswer(data, questionType);
+        } else {
+            showExpandError();
+        }
+    } catch (err) {
+        console.error('Expand suggestion failed:', err);
+        showExpandError();
+    }
+}
+
+/**
+ * Display the expanded answer from AI
+ * @param {Object} data - Response from AI
+ * @param {string} questionType - Type of question asked
+ */
+function displayExpandedAnswer(data, questionType) {
+    const loadingDiv = document.getElementById('expand-loading');
+    const contentDiv = document.getElementById('expand-content');
+    const iconEl = document.getElementById('expand-icon-result');
+    const typeEl = document.getElementById('expand-type');
+    const textEl = document.getElementById('expand-text');
+    const confidenceEl = document.getElementById('expand-confidence');
+
+    if (!loadingDiv || !contentDiv) return;
+
+    // Question type labels
+    const typeLabels = {
+        'resources': 'Zdroje',
+        'steps': 'Kroky',
+        'time_estimate': 'Časový odhad',
+        'connection': 'Souvislost s cíli'
+    };
+
+    // Set icon
+    if (iconEl) iconEl.textContent = data.icon || '💡';
+
+    // Set type label
+    if (typeEl) typeEl.textContent = typeLabels[questionType] || 'Odpověď';
+
+    // Format and set answer text
+    if (textEl) {
+        // Convert bullet points to HTML
+        let formattedAnswer = data.answer || 'Žádná odpověď';
+        formattedAnswer = formattedAnswer
+            .replace(/•/g, '<br>•')
+            .replace(/\n/g, '<br>')
+            .replace(/^<br>/, ''); // Remove leading br
+        textEl.innerHTML = formattedAnswer;
+    }
+
+    // Show confidence if available
+    if (confidenceEl) {
+        if (data.confidence) {
+            const confidence = Math.round(data.confidence * 100);
+            confidenceEl.innerHTML = `
+                <span class="expand-confidence-label">Jistota: ${confidence}%</span>
+                ${data.ai_generated ? '<span class="ai-badge">🧠 AI</span>' : '<span class="fallback-badge">📦 Fallback</span>'}
+            `;
+        } else {
+            confidenceEl.innerHTML = '';
+        }
+    }
+
+    // Hide loading, show content
+    loadingDiv.classList.add('hidden');
+    contentDiv.classList.remove('hidden');
+}
+
+/**
+ * Show error state in expand section
+ */
+function showExpandError() {
+    const loadingDiv = document.getElementById('expand-loading');
+    const contentDiv = document.getElementById('expand-content');
+    const textEl = document.getElementById('expand-text');
+    const iconEl = document.getElementById('expand-icon-result');
+    const typeEl = document.getElementById('expand-type');
+    const confidenceEl = document.getElementById('expand-confidence');
+
+    if (loadingDiv) loadingDiv.classList.add('hidden');
+    if (contentDiv) contentDiv.classList.remove('hidden');
+    if (iconEl) iconEl.textContent = '⚠️';
+    if (typeEl) typeEl.textContent = 'Chyba';
+    if (textEl) textEl.innerHTML = 'AI dočasně nedostupná. Zkus to později.';
+    if (confidenceEl) confidenceEl.innerHTML = '';
+}
+
+/**
+ * Reset expand section when new suggestion is loaded
+ */
+function resetExpandSection() {
+    const buttons = document.getElementById('expand-buttons');
+    const answer = document.getElementById('expand-answer');
+    const icon = document.getElementById('expand-icon');
+
+    if (buttons) buttons.classList.add('hidden');
+    if (answer) answer.classList.add('hidden');
+    if (icon) icon.textContent = '▶';
+    expandSectionOpen = false;
+}
+
+// =============================================================================
 // START DAY WORKFLOW FUNCTIONS
 // =============================================================================
 

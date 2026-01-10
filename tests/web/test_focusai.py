@@ -220,7 +220,7 @@ class TestCacheAIRecommendation:
         monkeypatch.setattr(db_module, 'db', mock_db)
 
         test_data = {'topic': 'React', 'reason': 'Popular framework'}
-        db_module.cache_ai_recommendation('learning', test_data, hours=24)
+        db_module.cache_ai_recommendation('learning', test_data, ttl_hours=24)
 
         # Verify saved
         cached = mock_db.ai_cache.find_one({'type': 'learning'})

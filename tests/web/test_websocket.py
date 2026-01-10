@@ -10,10 +10,12 @@ class TestWebSocketEvents:
     """Test WebSocket event handling."""
 
     @pytest.fixture
-    def socketio_client(self, app, mock_db, monkeypatch):
+    def socketio_client(self, app, mock_db, mock_pool, monkeypatch):
         """Create SocketIO test client."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
+        # PostgreSQL uses _pool and get_pool() instead of db
+        monkeypatch.setattr(db_module, '_pool', mock_pool)
+        monkeypatch.setattr(db_module, 'get_pool', lambda: mock_pool)
 
         from app import socketio
         return SocketIOTestClient(app, socketio)

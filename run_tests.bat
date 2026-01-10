@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title Pomodoro Timer v2.0 - Test Runner
 cd /d "%~dp0"
 
@@ -24,15 +25,15 @@ if "%1"=="" (
     REM Run tests separately to avoid module conflicts
     echo   [1/2] Running Web App tests...
     python -m pytest tests/web/ -v --tb=short
-    set WEB_EXIT=%errorlevel%
+    set WEB_EXIT=!errorlevel!
 
     echo.
     echo   [2/2] Running ML Service tests...
     python -m pytest tests/ml_service/ -v --tb=short
-    set ML_EXIT=%errorlevel%
+    set ML_EXIT=!errorlevel!
 
     echo.
-    if %WEB_EXIT%==0 if %ML_EXIT%==0 (
+    if !WEB_EXIT!==0 if !ML_EXIT!==0 (
         echo   All tests passed!
     ) else (
         echo   Some tests failed.

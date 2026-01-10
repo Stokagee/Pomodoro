@@ -108,17 +108,8 @@ class SessionQualityPredictor:
         return avg_rating, confidence
 
     def _get_default_day_score(self, day: int) -> float:
-        """Default weekday scores (Monday=0, Sunday=6)."""
-        defaults = {
-            0: 70.0,  # Monday
-            1: 75.0,  # Tuesday
-            2: 75.0,  # Wednesday
-            3: 72.0,  # Thursday
-            4: 65.0,  # Friday
-            5: 60.0,  # Saturday
-            6: 55.0   # Sunday
-        }
-        return defaults.get(day, 70.0)
+        """Default weekday scores - all days equal (no weekend penalty)."""
+        return 70.0
 
     # =========================================================================
     # Factor 3: Preset Score (weight: 0.20)

@@ -1,12 +1,13 @@
 """
 Shared pytest fixtures for Pomodoro Timer v2.0 tests.
-Provides MongoDB mocking and sample test data.
+Provides PostgreSQL mocking and sample test data.
 """
 import pytest
-import mongomock
 import sys
 import os
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock, patch
+from contextlib import contextmanager
 
 # Get absolute paths for web and ml-service directories
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,27 +15,148 @@ WEB_DIR = os.path.join(ROOT_DIR, 'web')
 ML_SERVICE_DIR = os.path.join(ROOT_DIR, 'ml-service')
 
 
-@pytest.fixture
-def mock_mongo_client():
-    """Create mongomock client for isolated testing."""
-    client = mongomock.MongoClient()
-    yield client
-    client.close()
+class MockCursor:
+    """Mock PostgreSQL cursor with RealDictCursor behavior."""
+
+    def __init__(self, data_store):
+        self.data_store = data_store
+        self._results = []
+        self._index = 0
+        self.rowcount = 0
+
+    def execute(self, query, params=None):
+        """Mock execute - store query for inspection."""
+        self._last_query = query
+        self._last_params = params
+        query_lower = query.lower().strip()
+
+        # Handle different query types
+        if 'insert into sessions' in query_lower:
+            session_id = len(self.data_store.get('sessions', [])) + 1
+            self._results = [{'id': session_id}]
+            self.rowcount = 1
+        elif 'select' in query_lower and 'from sessions' in query_lower:
+            self._results = self.data_store.get('sessions', [])
+        elif 'delete from sessions' in query_lower:
+            self.data_store['sessions'] = []
+            self.rowcount = len(self.data_store.get('sessions', []))
+        elif 'select 1' in query_lower:
+            self._results = [{'?column?': 1}]
+        elif 'pg_extension' in query_lower:
+            self._results = [{'extname': 'vector'}]
+        else:
+            self._results = []
+        self._index = 0
+
+    def fetchone(self):
+        """Fetch one result."""
+        if self._results and self._index < len(self._results):
+            result = self._results[self._index]
+            self._index += 1
+            return result
+        return None
+
+    def fetchall(self):
+        """Fetch all results."""
+        return self._results
+
+    def close(self):
+        """Close cursor."""
+        pass
+
+
+class MockConnection:
+    """Mock PostgreSQL connection."""
+
+    def __init__(self, data_store):
+        self.data_store = data_store
+
+    def cursor(self, cursor_factory=None):
+        return MockCursor(self.data_store)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+class MockPool:
+    """Mock PostgreSQL connection pool."""
+
+    def __init__(self, data_store):
+        self.data_store = data_store
+
+    def getconn(self):
+        return MockConnection(self.data_store)
+
+    def putconn(self, conn):
+        pass
 
 
 @pytest.fixture
-def mock_db(mock_mongo_client):
-    """Get test database."""
-    return mock_mongo_client['pomodoro_test']
+def mock_db_data():
+    """Shared data store for mock database."""
+    return {
+        'sessions': [],
+        'insights': [],
+        'predictions': [],
+        'daily_focus': [],
+        'weekly_plans': [],
+        'achievements': [],
+        'user_profile': [],
+    }
 
 
 @pytest.fixture
-def empty_db(mock_db):
+def mock_pool(mock_db_data):
+    """Create mock PostgreSQL pool."""
+    return MockPool(mock_db_data)
+
+
+@pytest.fixture
+def empty_db(mock_db_data):
     """Ensure database is empty."""
-    mock_db.sessions.delete_many({})
-    mock_db.insights.delete_many({})
-    mock_db.predictions.delete_many({})
-    return mock_db
+    mock_db_data['sessions'] = []
+    mock_db_data['insights'] = []
+    mock_db_data['predictions'] = []
+    return mock_db_data
+
+
+@pytest.fixture
+def mock_db(mock_db_data, mock_pool, monkeypatch):
+    """Create mock database compatible with PostgreSQL tests.
+
+    This fixture provides a mock PostgreSQL database environment
+    by patching psycopg2 and pgvector modules.
+    """
+    import sys
+    from unittest.mock import MagicMock
+
+    # Ensure web directory is in path
+    if WEB_DIR not in sys.path:
+        sys.path.insert(0, WEB_DIR)
+
+    # Mock psycopg2 before importing database
+    mock_psycopg2 = MagicMock()
+    mock_psycopg2.pool.ThreadedConnectionPool = MagicMock(return_value=mock_pool)
+    monkeypatch.setitem(sys.modules, 'psycopg2', mock_psycopg2)
+    monkeypatch.setitem(sys.modules, 'psycopg2.pool', mock_psycopg2.pool)
+    monkeypatch.setitem(sys.modules, 'psycopg2.sql', MagicMock())
+    monkeypatch.setitem(sys.modules, 'psycopg2.extras', MagicMock())
+
+    # Mock pgvector
+    mock_pgvector = MagicMock()
+    mock_pgvector.psycopg2.register_vector = MagicMock()
+    monkeypatch.setitem(sys.modules, 'pgvector', mock_pgvector)
+    monkeypatch.setitem(sys.modules, 'pgvector.psycopg2', mock_pgvector.psycopg2)
+
+    # Import and patch database module
+    import models.database as db_module
+    monkeypatch.setattr(db_module, '_pool', mock_pool)
+    monkeypatch.setattr(db_module, 'get_pool', lambda: mock_pool)
+
+    return mock_db_data
 
 
 @pytest.fixture
@@ -343,7 +465,8 @@ def sample_sessions_data():
 @pytest.fixture
 def sample_sessions(mock_db, sample_sessions_data):
     """Populate mock database with sample sessions."""
-    mock_db.sessions.insert_many(sample_sessions_data)
+    # mock_db is now mock_db_data dict (PostgreSQL compatible)
+    mock_db['sessions'] = sample_sessions_data
     return sample_sessions_data
 
 

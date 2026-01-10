@@ -270,6 +270,41 @@
                         <span>↻</span> Jiný nápad
                     </button>
                 </div>
+
+                <!-- Expand Suggestion Section -->
+                <div class="ai-expand-section">
+                    <button class="ai-expand-toggle" onclick="toggleExpandSection()">
+                        <span class="expand-icon" id="expand-icon">▶</span> Chci vědět víc...
+                    </button>
+                    <div class="ai-expand-buttons hidden" id="expand-buttons">
+                        <button class="expand-btn" onclick="expandSuggestion('resources')" title="Dokumentace, tutoriály, kurzy">
+                            <span>📚</span> Jaké zdroje?
+                        </button>
+                        <button class="expand-btn" onclick="expandSuggestion('steps')" title="Konkrétní kroky co dělat">
+                            <span>🎯</span> Co přesně dělat?
+                        </button>
+                        <button class="expand-btn" onclick="expandSuggestion('time_estimate')" title="Kolik času to zabere">
+                            <span>⏱️</span> Kolik času?
+                        </button>
+                        <button class="expand-btn" onclick="expandSuggestion('connection')" title="Jak to pomůže kariéře">
+                            <span>🔗</span> Proč právě toto?
+                        </button>
+                    </div>
+                    <div class="ai-expand-answer hidden" id="expand-answer">
+                        <div class="expand-loading hidden" id="expand-loading">
+                            <span class="ai-spinner"></span>
+                            <span>Přemýšlím...</span>
+                        </div>
+                        <div class="expand-content" id="expand-content">
+                            <div class="expand-header">
+                                <span class="expand-icon-result" id="expand-icon-result">📚</span>
+                                <span class="expand-type" id="expand-type">Zdroje</span>
+                            </div>
+                            <div class="expand-text" id="expand-text"></div>
+                            <div class="expand-confidence" id="expand-confidence"></div>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="ai-suggestion-error hidden" id="ai-error">
                 <span class="error-icon">⚠️</span>
