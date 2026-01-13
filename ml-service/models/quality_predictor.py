@@ -9,17 +9,18 @@ from datetime import datetime
 class SessionQualityPredictor:
     """
     Predicts session quality/productivity before starting.
-    Uses 6 weighted factors from historical data.
+    Uses 7 weighted factors from historical data including wellness.
     """
 
-    # Factor weights
+    # Factor weights (including wellness)
     WEIGHTS = {
-        'hour': 0.25,
-        'day': 0.15,
-        'preset': 0.20,
-        'category': 0.15,
-        'fatigue': 0.15,
-        'recovery': 0.10
+        'hour': 0.22,
+        'day': 0.13,
+        'preset': 0.17,
+        'category': 0.13,
+        'fatigue': 0.12,
+        'recovery': 0.08,
+        'wellness': 0.15
     }
 
     # Czech day names
@@ -217,7 +218,7 @@ class SessionQualityPredictor:
         return fatigue_defaults.get(next_session_num, max(45.0, 80 - next_session_num * 5)), 0.1
 
     # =========================================================================
-    # Factor 6: Recovery Score (weight: 0.10)
+    # Factor 6: Recovery Score (weight: 0.08)
     # =========================================================================
     def _calculate_recovery_score(self, minutes_since_last: Optional[int]) -> Tuple[float, float]:
         """Calculate productivity based on break duration."""
@@ -238,6 +239,60 @@ class SessionQualityPredictor:
             return 70.0, 0.3  # Extended break
         else:
             return 65.0, 0.2  # Cold start
+
+    # =========================================================================
+    # Factor 7: Wellness Score (weight: 0.15)
+    # =========================================================================
+    def _calculate_wellness_score(self, wellness_data: Optional[dict]) -> Tuple[float, float]:
+        """
+        Calculate productivity impact based on today's wellness check-in.
+
+        Args:
+            wellness_data: Dict with wellness metrics (sleep_quality, energy_level,
+                          mood, stress_level, motivation, focus_ability, overall_wellness)
+
+        Returns:
+            (score, confidence) tuple
+        """
+        if not wellness_data:
+            return 70.0, 0.1  # Default neutral score if no data
+
+        # Use overall_wellness if available
+        overall = wellness_data.get('overall_wellness')
+        if overall is not None:
+            # Higher confidence if we have the pre-calculated overall
+            return float(overall), 0.8
+
+        # Calculate from individual metrics if overall not available
+        weights = {
+            'sleep_quality': 0.20,
+            'energy_level': 0.20,
+            'mood': 0.15,
+            'stress_level': 0.15,  # Inverse
+            'motivation': 0.15,
+            'focus_ability': 0.15
+        }
+
+        total_weight = 0
+        weighted_sum = 0
+        filled_count = 0
+
+        for metric, weight in weights.items():
+            value = wellness_data.get(metric)
+            if value is not None:
+                filled_count += 1
+                total_weight += weight
+                # Stress is inverse: low stress = good
+                effective_value = (100 - value) if metric == 'stress_level' else value
+                weighted_sum += effective_value * weight
+
+        if total_weight > 0:
+            score = weighted_sum / total_weight
+            # Confidence based on how many metrics were filled
+            confidence = min(0.8, 0.3 + (filled_count / 6) * 0.5)
+            return score, confidence
+
+        return 70.0, 0.1  # Default if no valid data
 
     # =========================================================================
     # Factors List Builder
@@ -305,6 +360,31 @@ class SessionQualityPredictor:
                 'description': 'Historicky nizsi vykon v tento den',
                 'impact': 'low'
             })
+
+        # Wellness factors
+        if 'wellness' in scores:
+            wellness_score = scores['wellness']['score']
+            if wellness_score >= 75:
+                factors.append({
+                    'type': 'positive',
+                    'name': 'Dobry wellness stav',
+                    'description': f'Tvuj dnešní wellness check-in: {wellness_score:.0f}%',
+                    'impact': 'high' if wellness_score >= 85 else 'medium'
+                })
+            elif wellness_score < 50:
+                factors.append({
+                    'type': 'negative',
+                    'name': 'Nizky wellness stav',
+                    'description': f'Dnes se necitíš nejlépe ({wellness_score:.0f}%)',
+                    'impact': 'high'
+                })
+            elif wellness_score < 65:
+                factors.append({
+                    'type': 'negative',
+                    'name': 'Prumerny wellness stav',
+                    'description': f'Wellness: {wellness_score:.0f}% - zvaz kratsi session',
+                    'impact': 'medium'
+                })
 
         # Sort by impact
         impact_order = {'high': 0, 'medium': 1, 'low': 2}
@@ -395,7 +475,8 @@ class SessionQualityPredictor:
     # Main Prediction Method
     # =========================================================================
     def predict(self, hour: int, day: int, preset: str, category: Optional[str],
-                sessions_today: int, minutes_since_last: Optional[int]) -> dict:
+                sessions_today: int, minutes_since_last: Optional[int],
+                wellness_data: Optional[dict] = None) -> dict:
         """
         Main prediction method.
 
@@ -406,6 +487,7 @@ class SessionQualityPredictor:
             category: Selected category (can be None)
             sessions_today: Number of completed sessions today
             minutes_since_last: Minutes since last session (None if first)
+            wellness_data: Today's wellness check-in data (can be None)
 
         Returns:
             Prediction dict with productivity, confidence, factors, recommendation
@@ -417,6 +499,7 @@ class SessionQualityPredictor:
         category_score, category_conf = self._calculate_category_score(category, hour)
         fatigue_score, fatigue_conf = self._calculate_fatigue_score(sessions_today)
         recovery_score, recovery_conf = self._calculate_recovery_score(minutes_since_last)
+        wellness_score, wellness_conf = self._calculate_wellness_score(wellness_data)
 
         # Build scores dict
         scores = {
@@ -426,6 +509,7 @@ class SessionQualityPredictor:
             'category': {'score': category_score, 'confidence': category_conf, 'weight': self.WEIGHTS['category']},
             'fatigue': {'score': fatigue_score, 'confidence': fatigue_conf, 'weight': self.WEIGHTS['fatigue']},
             'recovery': {'score': recovery_score, 'confidence': recovery_conf, 'weight': self.WEIGHTS['recovery']},
+            'wellness': {'score': wellness_score, 'confidence': wellness_conf, 'weight': self.WEIGHTS['wellness']},
             '_hour': hour  # For preset recommendation
         }
 
@@ -436,7 +520,8 @@ class SessionQualityPredictor:
             preset_score * self.WEIGHTS['preset'] +
             category_score * self.WEIGHTS['category'] +
             fatigue_score * self.WEIGHTS['fatigue'] +
-            recovery_score * self.WEIGHTS['recovery']
+            recovery_score * self.WEIGHTS['recovery'] +
+            wellness_score * self.WEIGHTS['wellness']
         )
 
         # Weighted confidence
@@ -446,7 +531,8 @@ class SessionQualityPredictor:
             preset_conf * self.WEIGHTS['preset'] +
             category_conf * self.WEIGHTS['category'] +
             fatigue_conf * self.WEIGHTS['fatigue'] +
-            recovery_conf * self.WEIGHTS['recovery']
+            recovery_conf * self.WEIGHTS['recovery'] +
+            wellness_conf * self.WEIGHTS['wellness']
         )
 
         # Build response
@@ -462,7 +548,8 @@ class SessionQualityPredictor:
                 'preset_name': self.PRESETS.get(preset, {}).get('name', preset),
                 'category': category,
                 'sessions_today': sessions_today,
-                'minutes_since_last': minutes_since_last
+                'minutes_since_last': minutes_since_last,
+                'has_wellness_data': wellness_data is not None
             },
 
             'factor_scores': {
@@ -471,7 +558,8 @@ class SessionQualityPredictor:
                 'preset': {'score': round(preset_score, 1), 'confidence': round(preset_conf, 2), 'weight': self.WEIGHTS['preset']},
                 'category': {'score': round(category_score, 1), 'confidence': round(category_conf, 2), 'weight': self.WEIGHTS['category']},
                 'fatigue': {'score': round(fatigue_score, 1), 'confidence': round(fatigue_conf, 2), 'weight': self.WEIGHTS['fatigue']},
-                'recovery': {'score': round(recovery_score, 1), 'confidence': round(recovery_conf, 2), 'weight': self.WEIGHTS['recovery']}
+                'recovery': {'score': round(recovery_score, 1), 'confidence': round(recovery_conf, 2), 'weight': self.WEIGHTS['recovery']},
+                'wellness': {'score': round(wellness_score, 1), 'confidence': round(wellness_conf, 2), 'weight': self.WEIGHTS['wellness']}
             },
 
             'factors': self._build_factors_list(scores, preset, sessions_today, minutes_since_last),
@@ -479,8 +567,9 @@ class SessionQualityPredictor:
             'recommendation': self._generate_recommendation(predicted_productivity, scores, preset, sessions_today),
 
             'metadata': {
-                'model_version': '1.0',
+                'model_version': '1.1',
                 'total_sessions_analyzed': len(self.completed_sessions),
+                'wellness_integrated': wellness_data is not None,
                 'timestamp': datetime.now().isoformat()
             }
         }

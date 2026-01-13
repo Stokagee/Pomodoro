@@ -572,6 +572,178 @@ def update_daily_focus_stats(target_date):
 
 
 # =============================================================================
+# WELLNESS CHECKIN FUNCTIONS
+# =============================================================================
+
+def calculate_overall_wellness(sleep, energy, mood, stress, motivation, focus):
+    """Calculate weighted overall wellness score."""
+    # Stress is inverse: lower stress = higher wellness contribution
+    stress_contribution = (100 - stress) if stress is not None else 50
+
+    values = {
+        'sleep': (sleep, 0.20),
+        'energy': (energy, 0.20),
+        'mood': (mood, 0.15),
+        'stress': (stress_contribution, 0.15),
+        'motivation': (motivation, 0.15),
+        'focus': (focus, 0.15)
+    }
+
+    total_weight = 0
+    weighted_sum = 0
+
+    for key, (value, weight) in values.items():
+        if value is not None:
+            weighted_sum += value * weight
+            total_weight += weight
+
+    if total_weight > 0:
+        return round(weighted_sum / total_weight * (1 / 1), 1)  # Normalize if not all provided
+    return None
+
+
+def save_wellness_checkin(target_date, sleep_quality=None, energy_level=None,
+                          mood=None, stress_level=None, motivation=None,
+                          focus_ability=None, notes=''):
+    """Save or update wellness check-in for a date."""
+    if isinstance(target_date, str):
+        target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
+
+    overall = calculate_overall_wellness(
+        sleep_quality, energy_level, mood, stress_level, motivation, focus_ability
+    )
+
+    now = datetime.now()
+
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO wellness_checkins
+            (date, sleep_quality, energy_level, mood, stress_level,
+             motivation, focus_ability, overall_wellness, notes, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date) DO UPDATE SET
+                sleep_quality = EXCLUDED.sleep_quality,
+                energy_level = EXCLUDED.energy_level,
+                mood = EXCLUDED.mood,
+                stress_level = EXCLUDED.stress_level,
+                motivation = EXCLUDED.motivation,
+                focus_ability = EXCLUDED.focus_ability,
+                overall_wellness = EXCLUDED.overall_wellness,
+                notes = EXCLUDED.notes,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id
+        """, (
+            target_date, sleep_quality, energy_level, mood, stress_level,
+            motivation, focus_ability, overall, notes[:500] if notes else '',
+            now, now
+        ))
+        result = cur.fetchone()
+        return str(result['id']) if result else None
+
+
+def get_wellness_checkin(target_date=None):
+    """Get wellness check-in for a specific date (default: today)."""
+    if target_date is None:
+        target_date = date.today()
+    elif isinstance(target_date, str):
+        target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, date, sleep_quality, energy_level, mood, stress_level,
+                   motivation, focus_ability, overall_wellness, notes,
+                   created_at, updated_at
+            FROM wellness_checkins
+            WHERE date = %s
+        """, (target_date,))
+        wellness = cur.fetchone()
+
+    if wellness:
+        wellness = dict(wellness)
+        wellness['_id'] = str(wellness['id'])
+        wellness['id'] = str(wellness['id'])
+        wellness['date'] = wellness['date'].isoformat() if isinstance(wellness['date'], date) else wellness['date']
+        if wellness.get('created_at'):
+            wellness['created_at'] = wellness['created_at'].isoformat()
+        if wellness.get('updated_at'):
+            wellness['updated_at'] = wellness['updated_at'].isoformat()
+
+        # Convert Decimal to float for JSON serialization
+        for key in ['sleep_quality', 'energy_level', 'mood', 'stress_level',
+                    'motivation', 'focus_ability', 'overall_wellness']:
+            if wellness.get(key) is not None:
+                wellness[key] = float(wellness[key])
+
+    return wellness
+
+
+def get_wellness_history(days=30):
+    """Get wellness check-in history for trend analysis."""
+    start_date = date.today() - timedelta(days=days)
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT id, date, sleep_quality, energy_level, mood, stress_level,
+                   motivation, focus_ability, overall_wellness, notes,
+                   created_at
+            FROM wellness_checkins
+            WHERE date >= %s
+            ORDER BY date DESC
+        """, (start_date,))
+        history = [dict(row) for row in cur.fetchall()]
+
+    for w in history:
+        w['_id'] = str(w['id'])
+        w['id'] = str(w['id'])
+        w['date'] = w['date'].isoformat() if isinstance(w['date'], date) else w['date']
+        if w.get('created_at'):
+            w['created_at'] = w['created_at'].isoformat()
+
+        # Convert Decimal to float
+        for key in ['sleep_quality', 'energy_level', 'mood', 'stress_level',
+                    'motivation', 'focus_ability', 'overall_wellness']:
+            if w.get(key) is not None:
+                w[key] = float(w[key])
+
+    return history
+
+
+def get_wellness_average(days=7):
+    """Get average wellness scores for ML integration."""
+    start_date = date.today() - timedelta(days=days)
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT
+                AVG(sleep_quality) as avg_sleep,
+                AVG(energy_level) as avg_energy,
+                AVG(mood) as avg_mood,
+                AVG(stress_level) as avg_stress,
+                AVG(motivation) as avg_motivation,
+                AVG(focus_ability) as avg_focus,
+                AVG(overall_wellness) as avg_overall,
+                COUNT(*) as checkin_count
+            FROM wellness_checkins
+            WHERE date >= %s
+        """, (start_date,))
+        result = cur.fetchone()
+
+    if result:
+        return {
+            'avg_sleep': float(result['avg_sleep']) if result['avg_sleep'] else None,
+            'avg_energy': float(result['avg_energy']) if result['avg_energy'] else None,
+            'avg_mood': float(result['avg_mood']) if result['avg_mood'] else None,
+            'avg_stress': float(result['avg_stress']) if result['avg_stress'] else None,
+            'avg_motivation': float(result['avg_motivation']) if result['avg_motivation'] else None,
+            'avg_focus': float(result['avg_focus']) if result['avg_focus'] else None,
+            'avg_overall': float(result['avg_overall']) if result['avg_overall'] else None,
+            'checkin_count': result['checkin_count'],
+            'days': days
+        }
+    return None
+
+
+# =============================================================================
 # CALENDAR FUNCTIONS
 # =============================================================================
 

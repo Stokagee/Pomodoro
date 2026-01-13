@@ -229,6 +229,27 @@ CREATE INDEX idx_predictions_date ON predictions(date DESC);
 CREATE INDEX idx_predictions_created_at ON predictions(created_at DESC);
 
 -- =============================================================================
+-- WELLNESS CHECKINS - Morning wellness check-in data
+-- =============================================================================
+CREATE TABLE wellness_checkins (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    date DATE UNIQUE NOT NULL,
+    sleep_quality NUMERIC(5,2),       -- 0-100 scale
+    energy_level NUMERIC(5,2),        -- 0-100 scale
+    mood NUMERIC(5,2),                -- 0-100 scale
+    stress_level NUMERIC(5,2),        -- 0-100 scale (inverse: low = good)
+    motivation NUMERIC(5,2),          -- 0-100 scale
+    focus_ability NUMERIC(5,2),       -- 0-100 scale
+    overall_wellness NUMERIC(5,2),    -- Calculated weighted average
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_wellness_date ON wellness_checkins(date DESC);
+CREATE INDEX idx_wellness_overall ON wellness_checkins(overall_wellness);
+
+-- =============================================================================
 -- AI CACHE (for Ollama responses)
 -- =============================================================================
 CREATE TABLE ai_cache (
@@ -368,6 +389,9 @@ CREATE TRIGGER update_category_skills_updated_at BEFORE UPDATE ON category_skill
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 CREATE TRIGGER update_insights_updated_at BEFORE UPDATE ON insights
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+CREATE TRIGGER update_wellness_checkins_updated_at BEFORE UPDATE ON wellness_checkins
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- =============================================================================

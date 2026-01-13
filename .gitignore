@@ -28,3 +28,6 @@ Thumbs.db
 .claude/
 CLAUDE.md
 nul
+
+# Claude Code temporary files
+tmpclaude-*-cwd

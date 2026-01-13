@@ -1,9 +1,10 @@
 """
 Web App Database Operation Tests.
-Tests MongoDB operations in models/database.py.
+Tests PostgreSQL operations in models/database.py.
 """
 import pytest
-from datetime import datetime
+from datetime import datetime, date
+from unittest.mock import MagicMock, patch
 import sys
 import os
 
@@ -14,255 +15,351 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'web'))
 class TestLogSession:
     """Test session logging operations."""
 
-    def test_log_session_creates_document(self, mock_db, monkeypatch):
-        """log_session() should create document in sessions collection."""
+    def test_log_session_creates_document(self, app):
+        """log_session() should return session id."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        result = db_module.log_session(
-            preset='deep_work',
-            category='SOAP',
-            task='Test task',
-            duration_minutes=52
-        )
+        # Mock get_cursor context manager
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'id': 1}
 
-        # Should return session_id
-        assert result is not None
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Verify document exists
-        doc = mock_db.sessions.find_one({'task': 'Test task'})
-        assert doc is not None
-        assert doc['preset'] == 'deep_work'
-        assert doc['category'] == 'SOAP'
-        assert doc['duration_minutes'] == 52
+            result = db_module.log_session(
+                preset='deep_work',
+                category='SOAP',
+                task='Test task',
+                duration_minutes=52
+            )
 
-    def test_log_session_all_fields_stored(self, mock_db, monkeypatch):
-        """log_session() should store all fields correctly."""
+            assert result is not None
+            assert result == '1'
+            mock_cursor.execute.assert_called_once()
+
+    def test_log_session_all_fields_stored(self, app):
+        """log_session() should pass all fields to SQL."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        result = db_module.log_session(
-            preset='learning',
-            category='Robot Framework',
-            task='Full fields test',
-            duration_minutes=45,
-            completed=True,
-            productivity_rating=5,
-            notes='Test notes'
-        )
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'id': 2}
 
-        doc = mock_db.sessions.find_one({'task': 'Full fields test'})
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        assert doc['preset'] == 'learning'
-        assert doc['category'] == 'Robot Framework'
-        assert doc['duration_minutes'] == 45
-        assert doc['completed'] == True
-        assert doc['productivity_rating'] == 5
-        assert doc['notes'] == 'Test notes'
-        assert 'date' in doc
-        assert 'time' in doc
-        assert 'hour' in doc
-        assert 'day_of_week' in doc
-        assert 'created_at' in doc
+            result = db_module.log_session(
+                preset='learning',
+                category='Robot Framework',
+                task='Full fields test',
+                duration_minutes=45,
+                completed=True,
+                productivity_rating=5,
+                notes='Test notes'
+            )
 
-    def test_log_session_auto_fields(self, mock_db, monkeypatch):
-        """log_session() should auto-generate date/time fields."""
+            assert result == '2'
+            # Check execute was called with correct parameters
+            call_args = mock_cursor.execute.call_args
+            assert 'INSERT INTO sessions' in call_args[0][0]
+            params = call_args[0][1]
+            assert params[0] == 'learning'  # preset
+            assert params[1] == 'Robot Framework'  # category
+            assert params[2] == 'Full fields test'  # task
+            assert params[3] == 45  # duration_minutes
+            assert params[4] == True  # completed
+            assert params[5] == 5  # productivity_rating
+
+    def test_log_session_auto_fields(self, app):
+        """log_session() should include date/time in SQL params."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        db_module.log_session(
-            preset='quick_tasks',
-            category='General',
-            task='Auto fields test',
-            duration_minutes=25
-        )
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {'id': 3}
 
-        doc = mock_db.sessions.find_one({'task': 'Auto fields test'})
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Check auto-generated fields
-        assert doc['date'] == datetime.now().strftime('%Y-%m-%d')
-        assert isinstance(doc['hour'], int)
-        assert 0 <= doc['hour'] <= 23
-        assert isinstance(doc['day_of_week'], int)
-        assert 0 <= doc['day_of_week'] <= 6
+            db_module.log_session(
+                preset='quick_tasks',
+                category='General',
+                task='Auto fields test',
+                duration_minutes=25
+            )
+
+            call_args = mock_cursor.execute.call_args
+            params = call_args[0][1]
+            # Check that date and time are passed
+            assert isinstance(params[8], date)  # date
+            assert params[8] == date.today()
 
 
 class TestGetTodayStats:
     """Test today's statistics retrieval."""
 
-    def test_get_today_stats_empty_db(self, empty_db, monkeypatch):
+    def test_get_today_stats_empty_db(self, app):
         """get_today_stats() should return zeros for empty DB."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', empty_db)
 
-        stats = db_module.get_today_stats()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
 
-        assert stats['sessions'] == 0 or stats.get('completed_sessions', 0) == 0
-        assert stats.get('total_minutes', 0) == 0
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-    def test_get_today_stats_with_sessions(self, mock_db, monkeypatch):
+            stats = db_module.get_today_stats()
+
+            assert stats['sessions'] == 0
+            assert stats['total_minutes'] == 0
+
+    def test_get_today_stats_with_sessions(self, app):
         """get_today_stats() should calculate correct stats."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        # Insert today's sessions
-        today = datetime.now().strftime('%Y-%m-%d')
-        mock_db.sessions.insert_many([
+        today = date.today()
+        mock_sessions = [
             {
+                'id': 1,
                 'date': today,
+                'time': '09:00:00',
                 'preset': 'deep_work',
                 'category': 'SOAP',
                 'task': 'Task 1',
                 'duration_minutes': 52,
                 'completed': True,
                 'productivity_rating': 4,
+                'notes': '',
                 'hour': 9,
-                'day_of_week': datetime.now().weekday(),
+                'day_of_week': today.weekday(),
                 'created_at': datetime.now()
             },
             {
+                'id': 2,
                 'date': today,
+                'time': '10:00:00',
                 'preset': 'learning',
                 'category': 'Robot Framework',
                 'task': 'Task 2',
                 'duration_minutes': 45,
                 'completed': True,
                 'productivity_rating': 5,
+                'notes': '',
                 'hour': 10,
-                'day_of_week': datetime.now().weekday(),
+                'day_of_week': today.weekday(),
                 'created_at': datetime.now()
             }
-        ])
+        ]
 
-        stats = db_module.get_today_stats()
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = mock_sessions
 
-        # Should have 2 sessions
-        total_sessions = stats.get('sessions', stats.get('completed_sessions', 0))
-        assert total_sessions >= 2
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Should have 97 minutes total (52 + 45)
-        total_minutes = stats.get('total_minutes', 0)
-        assert total_minutes >= 97
+            stats = db_module.get_today_stats()
 
-    def test_get_today_stats_avg_rating(self, mock_db, monkeypatch):
+            assert stats['sessions'] == 2
+            assert stats['total_minutes'] == 97  # 52 + 45
+
+    def test_get_today_stats_avg_rating(self, app):
         """get_today_stats() should calculate correct average rating."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        today = datetime.now().strftime('%Y-%m-%d')
-        mock_db.sessions.delete_many({})  # Clear first
-        mock_db.sessions.insert_many([
+        today = date.today()
+        mock_sessions = [
             {
+                'id': 1,
                 'date': today,
+                'time': '09:00:00',
                 'preset': 'deep_work',
                 'category': 'SOAP',
                 'task': 'Rated 4',
                 'duration_minutes': 52,
                 'completed': True,
-                'productivity_rating': 4,
+                'productivity_rating': 4,  # Old format: 4 -> 80%
+                'notes': '',
                 'hour': 9,
-                'day_of_week': datetime.now().weekday(),
+                'day_of_week': today.weekday(),
                 'created_at': datetime.now()
             },
             {
+                'id': 2,
                 'date': today,
+                'time': '10:00:00',
                 'preset': 'deep_work',
                 'category': 'SOAP',
                 'task': 'Rated 5',
                 'duration_minutes': 52,
                 'completed': True,
-                'productivity_rating': 5,
+                'productivity_rating': 5,  # Old format: 5 -> 100%
+                'notes': '',
                 'hour': 10,
-                'day_of_week': datetime.now().weekday(),
+                'day_of_week': today.weekday(),
                 'created_at': datetime.now()
             }
-        ])
+        ]
 
-        stats = db_module.get_today_stats()
-        avg_rating = stats.get('avg_rating', 0)
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = mock_sessions
 
-        # Rating 4 → 80%, Rating 5 → 100% (normalize_rating converts old 1-5 to 0-100%)
-        # Average of 80 and 100 should be 90
-        if avg_rating > 0:
-            assert 80.0 <= avg_rating <= 100.0
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+            stats = db_module.get_today_stats()
+
+            # Rating 4 -> 80%, Rating 5 -> 100%, avg = 90%
+            assert stats['avg_rating'] == 90.0
 
 
 class TestGetWeeklyStats:
     """Test weekly statistics retrieval."""
 
-    def test_get_weekly_stats_aggregation(self, sample_sessions, mock_db, monkeypatch):
+    def test_get_weekly_stats_aggregation(self, app):
         """get_weekly_stats() should aggregate by day/category/preset."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        stats = db_module.get_weekly_stats()
+        today = date.today()
+        mock_sessions = [
+            {
+                'date': today,
+                'time': '09:00:00',
+                'preset': 'deep_work',
+                'category': 'SOAP',
+                'duration_minutes': 52,
+                'productivity_rating': 80,
+                'hour': 9,
+                'day_of_week': today.weekday()
+            },
+            {
+                'date': today,
+                'time': '10:00:00',
+                'preset': 'learning',
+                'category': 'Robot Framework',
+                'duration_minutes': 45,
+                'productivity_rating': 85,
+                'hour': 10,
+                'day_of_week': today.weekday()
+            }
+        ]
 
-        # Check structure
-        assert 'total_minutes' in stats or 'total_hours' in stats
-        assert 'total_sessions' in stats
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = mock_sessions
 
-        # Should have daily breakdown
-        if 'daily' in stats:
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+            stats = db_module.get_weekly_stats()
+
+            assert 'total_minutes' in stats
+            assert 'total_sessions' in stats
+            assert 'daily' in stats
             assert isinstance(stats['daily'], dict)
 
 
 class TestGetHistory:
     """Test session history retrieval."""
 
-    def test_get_history_returns_list(self, sample_sessions, mock_db, monkeypatch):
+    def test_get_history_returns_list(self, app):
         """get_history() should return list of sessions."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        history = db_module.get_history()
+        mock_sessions = [
+            {
+                'id': 1,
+                'date': date.today(),
+                'time': '09:00:00',
+                'preset': 'deep_work',
+                'category': 'SOAP',
+                'task': 'Test',
+                'duration_minutes': 52,
+                'completed': True,
+                'productivity_rating': 80,
+                'notes': '',
+                'created_at': datetime.now()
+            }
+        ]
 
-        assert isinstance(history, list)
-        assert len(history) > 0
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = mock_sessions
 
-    def test_get_history_limit_works(self, sample_sessions, mock_db, monkeypatch):
-        """get_history(limit=N) should respect limit."""
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+            history = db_module.get_history()
+
+            assert isinstance(history, list)
+            assert len(history) == 1
+
+    def test_get_history_limit_works(self, app):
+        """get_history(limit=N) should pass limit to SQL."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        history = db_module.get_history(limit=3)
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
 
-        assert len(history) <= 3
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
+
+            db_module.get_history(limit=3)
+
+            # Check that LIMIT was passed
+            call_args = mock_cursor.execute.call_args
+            assert 'LIMIT' in call_args[0][0]
+            assert call_args[0][1] == (3,)
 
 
 class TestInsightOperations:
     """Test insight storage and retrieval."""
 
-    def test_save_insight(self, mock_db, monkeypatch):
-        """save_insight() should store insight data."""
+    def test_save_insight(self, app):
+        """save_insight() should execute INSERT query."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        test_insight = {
-            'best_hours': [9, 10, 11],
-            'best_day': 'Monday',
-            'trend': 'up'
-        }
+        mock_cursor = MagicMock()
 
-        db_module.save_insight('productivity_analysis', test_insight)
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        # Verify saved
-        saved = mock_db.insights.find_one({'type': 'productivity_analysis'})
-        assert saved is not None
-        assert saved['data']['best_hours'] == [9, 10, 11]
+            test_insight = {
+                'best_hours': [9, 10, 11],
+                'best_day': 'Monday',
+                'trend': 'up'
+            }
 
-    def test_get_insight(self, mock_db, monkeypatch):
+            db_module.save_insight('productivity_analysis', test_insight)
+
+            mock_cursor.execute.assert_called_once()
+            call_args = mock_cursor.execute.call_args
+            assert 'INSERT INTO insights' in call_args[0][0]
+            assert call_args[0][1][0] == 'productivity_analysis'
+
+    def test_get_insight(self, app):
         """get_insight() should retrieve stored insight."""
         import models.database as db_module
-        monkeypatch.setattr(db_module, 'db', mock_db)
 
-        # Insert test insight
-        mock_db.insights.insert_one({
+        mock_cursor = MagicMock()
+        mock_cursor.fetchone.return_value = {
             'type': 'test_insight',
             'data': {'key': 'value'},
+            'created_at': datetime.now(),
             'updated_at': datetime.now()
-        })
+        }
 
-        result = db_module.get_insight('test_insight')
+        with patch.object(db_module, 'get_cursor') as mock_get_cursor:
+            mock_get_cursor.return_value.__enter__ = MagicMock(return_value=mock_cursor)
+            mock_get_cursor.return_value.__exit__ = MagicMock(return_value=False)
 
-        assert result is not None
-        assert result['data']['key'] == 'value'
+            result = db_module.get_insight('test_insight')
+
+            assert result is not None
+            assert result['data']['key'] == 'value'
+            mock_cursor.execute.assert_called_once()

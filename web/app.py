@@ -57,7 +57,9 @@ from models.database import (
     get_cached_ai_recommendation, cache_ai_recommendation,
     get_recent_tasks, invalidate_ai_cache,
     # Category Management
-    rename_category_in_sessions
+    rename_category_in_sessions,
+    # Wellness Check-in
+    save_wellness_checkin, get_wellness_checkin, get_wellness_history, get_wellness_average
 )
 
 app = Flask(__name__)
@@ -232,6 +234,23 @@ def get_ml_quality_prediction(preset='deep_work', category=None):
             except Exception:
                 pass
 
+    # Get today's wellness check-in data
+    wellness_data = None
+    try:
+        wellness_checkin = get_wellness_checkin()
+        if wellness_checkin:
+            wellness_data = {
+                'sleep_quality': wellness_checkin.get('sleep_quality'),
+                'energy_level': wellness_checkin.get('energy_level'),
+                'mood': wellness_checkin.get('mood'),
+                'stress_level': wellness_checkin.get('stress_level'),
+                'motivation': wellness_checkin.get('motivation'),
+                'focus_ability': wellness_checkin.get('focus_ability'),
+                'overall_wellness': wellness_checkin.get('overall_wellness')
+            }
+    except Exception as e:
+        print(f"Could not fetch wellness data: {e}")
+
     try:
         now = datetime.now()
         response = requests.post(
@@ -242,7 +261,8 @@ def get_ml_quality_prediction(preset='deep_work', category=None):
                 'preset': preset,
                 'category': category,
                 'sessions_today': sessions_today,
-                'minutes_since_last': minutes_since_last
+                'minutes_since_last': minutes_since_last,
+                'wellness': wellness_data
             },
             timeout=5
         )
@@ -975,6 +995,174 @@ def api_update_focus(date_str):
         'themes': valid_themes,
         'notes': notes,
         'planned_sessions': sum(t.get('planned_sessions', 0) for t in valid_themes)
+    })
+
+
+# =============================================================================
+# WELLNESS CHECK-IN API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/wellness/today')
+def api_wellness_today():
+    """Get today's wellness check-in data."""
+    from datetime import date
+    wellness = get_wellness_checkin(date.today())
+    return jsonify({
+        'success': True,
+        'wellness': wellness,
+        'date': date.today().isoformat()
+    })
+
+
+@app.route('/api/wellness', methods=['POST'])
+def api_save_wellness():
+    """Save wellness check-in data.
+
+    Request body:
+        - sleep_quality: 0-100
+        - energy_level: 0-100
+        - mood: 0-100
+        - stress_level: 0-100 (inverse: low = good)
+        - motivation: 0-100
+        - focus_ability: 0-100
+        - notes: Optional text
+
+    Returns:
+        - success: Boolean
+        - wellness: Saved wellness data with calculated overall_wellness
+    """
+    from datetime import date
+
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    today = date.today()
+
+    # Validate and sanitize values (0-100 range)
+    def sanitize_value(val):
+        if val is None:
+            return None
+        try:
+            v = float(val)
+            return max(0, min(100, v))
+        except (TypeError, ValueError):
+            return None
+
+    wellness_id = save_wellness_checkin(
+        target_date=today,
+        sleep_quality=sanitize_value(data.get('sleep_quality')),
+        energy_level=sanitize_value(data.get('energy_level')),
+        mood=sanitize_value(data.get('mood')),
+        stress_level=sanitize_value(data.get('stress_level')),
+        motivation=sanitize_value(data.get('motivation')),
+        focus_ability=sanitize_value(data.get('focus_ability')),
+        notes=str(data.get('notes', ''))[:500]
+    )
+
+    if wellness_id:
+        wellness = get_wellness_checkin(today)
+        return jsonify({
+            'success': True,
+            'wellness': wellness,
+            'date': today.isoformat()
+        })
+    else:
+        return jsonify({'error': 'Failed to save wellness data'}), 500
+
+
+@app.route('/api/wellness/history')
+def api_wellness_history():
+    """Get wellness check-in history for trend analysis.
+
+    Query params:
+        - days: Number of days to look back (default: 30, max: 365)
+
+    Returns:
+        - success: Boolean
+        - history: Array of wellness check-ins
+        - averages: Average scores for the period
+    """
+    days = request.args.get('days', 30, type=int)
+    days = max(1, min(365, days))  # Clamp between 1 and 365
+
+    history = get_wellness_history(days)
+    averages = get_wellness_average(days)
+
+    return jsonify({
+        'success': True,
+        'history': history,
+        'averages': averages,
+        'days': days,
+        'count': len(history)
+    })
+
+
+@app.route('/api/wellness/analytics')
+def api_wellness_analytics():
+    """Get wellness analytics with productivity correlation.
+
+    Query params:
+        - days: Number of days to analyze (default: 30)
+
+    Returns:
+        - success: Boolean
+        - averages: Average wellness scores
+        - trends: Trend direction for each metric
+        - correlation: Wellness vs productivity correlation
+    """
+    from datetime import date, timedelta
+
+    days = request.args.get('days', 30, type=int)
+    days = max(7, min(365, days))
+
+    history = get_wellness_history(days)
+    averages = get_wellness_average(days)
+
+    # Calculate trends (comparing first half vs second half of period)
+    trends = {}
+    if len(history) >= 4:
+        mid = len(history) // 2
+        recent = history[:mid]
+        older = history[mid:]
+
+        metrics = ['sleep_quality', 'energy_level', 'mood', 'stress_level',
+                   'motivation', 'focus_ability', 'overall_wellness']
+
+        for metric in metrics:
+            recent_avg = sum(w.get(metric) or 0 for w in recent) / len(recent) if recent else 0
+            older_avg = sum(w.get(metric) or 0 for w in older) / len(older) if older else 0
+
+            if older_avg > 0:
+                change = ((recent_avg - older_avg) / older_avg) * 100
+                if change > 5:
+                    trends[metric] = 'improving'
+                elif change < -5:
+                    trends[metric] = 'declining'
+                else:
+                    trends[metric] = 'stable'
+            else:
+                trends[metric] = 'insufficient_data'
+
+    # Calculate productivity correlation (simple)
+    correlation = None
+    if len(history) >= 7:
+        # Get sessions for same period
+        wellness_dates = {w['date']: w.get('overall_wellness', 0) for w in history}
+        stats = get_today_stats()  # This is just for today, we'd need historical data
+        # For now, just return averages
+        correlation = {
+            'note': 'Correlation analysis requires more historical data',
+            'wellness_avg': averages.get('avg_overall') if averages else None
+        }
+
+    return jsonify({
+        'success': True,
+        'averages': averages,
+        'trends': trends,
+        'correlation': correlation,
+        'days': days,
+        'data_points': len(history)
     })
 
 
@@ -1847,15 +2035,26 @@ def api_ai_next_session():
     - Recommended preset
     - Reason for suggestion
 
-    Cache: 15 minutes
+    Query params:
+        exclude_topic: Topic to exclude (for "Jiný nápad" - request different suggestion)
+        bypass_cache: Force refresh without cache (default: false)
+
+    Cache: 15 minutes (skipped when exclude_topic is provided or bypass_cache is true)
     """
-    # Check short-term cache
-    cached = get_cached_ai_recommendation('next_session')
-    if cached:
-        return jsonify({
-            **cached,
-            'from_cache': True
-        })
+    # Get exclude_topic parameter (for "Jiný nápad" functionality)
+    exclude_topic = request.args.get('exclude_topic', '')
+
+    # Get bypass_cache parameter (for force refresh)
+    bypass_cache = request.args.get('bypass_cache', 'false').lower() == 'true'
+
+    # Check short-term cache (skip if requesting different topic OR bypass_cache is true)
+    if not bypass_cache and not exclude_topic:
+        cached = get_cached_ai_recommendation('next_session')
+        if cached:
+            return jsonify({
+                **cached,
+                'from_cache': True
+            })
 
     # Get context
     from datetime import datetime
@@ -1864,21 +2063,28 @@ def api_ai_next_session():
     config = load_config()
 
     try:
+        params = {
+            'category': context.get('last_category', ''),
+            'task': context.get('last_task', ''),
+            'hour': datetime.now().hour,
+            'sessions': today_stats.get('sessions_count', 0),
+            'categories': ','.join(config.get('categories', [])),  # Pass user's categories
+            'bypass_cache': bypass_cache  # Pass to ML service
+        }
+        # Add exclude_topic if provided
+        if exclude_topic:
+            params['exclude_topic'] = exclude_topic
+
         response = requests.get(
             f"{ML_SERVICE_URL}/api/ai/next-session-suggestion",
-            params={
-                'category': context.get('last_category', ''),
-                'task': context.get('last_task', ''),
-                'hour': datetime.now().hour,
-                'sessions': today_stats.get('sessions_count', 0),
-                'categories': ','.join(config.get('categories', []))  # Pass user's categories
-            },
+            params=params,
             timeout=180
         )
         if response.status_code == 200:
             result = response.json()
-            # Cache for 15 minutes
-            cache_ai_recommendation('next_session', result, ttl_hours=0.25)
+            # Only cache if not excluding a topic AND not bypassing cache (normal request)
+            if not exclude_topic and not bypass_cache:
+                cache_ai_recommendation('next_session', result, ttl_hours=0.25)
             return jsonify({
                 **result,
                 'from_cache': False
@@ -2047,6 +2253,12 @@ def api_ai_invalidate_cache():
     cache_type = request.args.get('type')
     invalidate_ai_cache(cache_type)
 
+    # Also invalidate ML service in-memory cache
+    try:
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+    except Exception:
+        pass  # Non-blocking, don't fail if ML service is unavailable
+
     return jsonify({
         'status': 'ok',
         'invalidated': cache_type or 'all'
@@ -2197,6 +2409,9 @@ def api_start_day():
     # Get today's stats
     today_stats = get_today_stats()
 
+    # Get today's wellness check-in (if already completed)
+    wellness_checkin = get_wellness_checkin(date.today())
+
     return jsonify({
         'success': True,
         'categories': categories,
@@ -2206,6 +2421,7 @@ def api_start_day():
         'user_profile': user_profile,
         'streak_status': streak_status,
         'today_stats': today_stats,
+        'wellness_checkin': wellness_checkin,
         'date': date.today().isoformat()
     })
 
@@ -2262,13 +2478,31 @@ def api_save_start_day():
     # Calculate total planned sessions
     total_planned = sum(t.get('planned_sessions', 0) for t in valid_themes)
 
+    # Handle wellness check-in data
+    wellness_result = None
+    wellness_data = data.get('wellness')
+    if wellness_data:
+        wellness_id = save_wellness_checkin(
+            target_date=today,
+            sleep_quality=wellness_data.get('sleep_quality'),
+            energy_level=wellness_data.get('energy_level'),
+            mood=wellness_data.get('mood'),
+            stress_level=wellness_data.get('stress_level'),
+            motivation=wellness_data.get('motivation'),
+            focus_ability=wellness_data.get('focus_ability'),
+            notes=wellness_data.get('notes', '')
+        )
+        if wellness_id:
+            wellness_result = get_wellness_checkin(today)
+
     return jsonify({
         'success': True,
         'date': today.isoformat(),
         'themes': valid_themes,
         'total_planned_sessions': total_planned,
         'notes': notes,
-        'challenge': challenge_result
+        'challenge': challenge_result,
+        'wellness': wellness_result
     })
 
 

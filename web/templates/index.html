@@ -235,7 +235,7 @@
         <div class="ai-suggestion-header">
             <span class="ai-icon">🧠</span>
             <span class="ai-title">FocusAI doporučuje</span>
-            <button class="ai-refresh-btn" onclick="refreshAISuggestion()" title="Obnovit doporučení">↻</button>
+            <button class="ai-refresh-btn" onclick="forceRefreshAISuggestion()" title="Obnovit doporučení (bez cache)">↻</button>
             <button class="ai-close-btn" onclick="hideAISuggestion()" title="Zavřít">×</button>
         </div>
         <div class="ai-suggestion-content">
@@ -459,26 +459,222 @@
 <!-- Start Day Modal (3-step workflow) -->
 <div class="modal-overlay" id="start-day-modal" style="display: none;">
     <div class="modal start-day-modal">
-        <!-- Step Indicator -->
+        <!-- Step Indicator (4 steps: Wellness → Briefing → Plánování → Výzva) -->
         <div class="start-day-steps">
             <div class="step active" data-step="1">
                 <span class="step-number">1</span>
-                <span class="step-label">Briefing</span>
+                <span class="step-label">Wellness</span>
             </div>
             <div class="step-line"></div>
             <div class="step" data-step="2">
                 <span class="step-number">2</span>
-                <span class="step-label">Plánování</span>
+                <span class="step-label">Briefing</span>
             </div>
             <div class="step-line"></div>
             <div class="step" data-step="3">
                 <span class="step-number">3</span>
+                <span class="step-label">Plánování</span>
+            </div>
+            <div class="step-line"></div>
+            <div class="step" data-step="4">
+                <span class="step-number">4</span>
                 <span class="step-label">Výzva</span>
             </div>
         </div>
 
-        <!-- Step 1: Morning Briefing -->
+        <!-- Step 1: Wellness Check-in -->
         <div class="start-day-step" id="start-day-step-1">
+            <div class="modal-header">
+                <h2>🌱 Jak se dnes cítíš?</h2>
+                <p>Rychlý wellness check-in pro lepší doporučení</p>
+            </div>
+            <div class="modal-body">
+                <div class="wellness-checkin-grid">
+                    <!-- Sleep Quality -->
+                    <div class="wellness-rating-item" id="wellness-sleep" data-metric="sleep_quality">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">🌙</span>
+                            <span class="wellness-label">Kvalita spánku</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-sleep-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-sleep-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-sleep-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-blue)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-sleep-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-blue)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-sleep-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-blue)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-sleep-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-blue)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-sleep-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-blue)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-sleep-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-sleep-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-sleep-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-sleep-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-sleep-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Energy Level -->
+                    <div class="wellness-rating-item" id="wellness-energy" data-metric="energy_level">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">⚡</span>
+                            <span class="wellness-label">Energie</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-energy-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-energy-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-energy-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-green)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-energy-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-green)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-energy-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-green)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-energy-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-green)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-energy-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-green)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-energy-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-energy-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-energy-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-energy-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-energy-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Mood -->
+                    <div class="wellness-rating-item" id="wellness-mood" data-metric="mood">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">😊</span>
+                            <span class="wellness-label">Nálada</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-mood-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-mood-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-mood-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-orange)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-mood-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-orange)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-mood-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-orange)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-mood-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-orange)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-mood-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-orange)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-mood-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-mood-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-mood-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-mood-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-mood-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Stress Level (inverse) -->
+                    <div class="wellness-rating-item" id="wellness-stress" data-metric="stress_level">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">😰</span>
+                            <span class="wellness-label">Stres</span>
+                            <span class="wellness-hint">(nízký = dobrý)</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-stress-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-stress-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-stress-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-red)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-stress-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-red)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-stress-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-red)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-stress-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-red)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-stress-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-red)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-stress-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-stress-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-stress-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-stress-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-stress-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Motivation -->
+                    <div class="wellness-rating-item" id="wellness-motivation" data-metric="motivation">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">🎯</span>
+                            <span class="wellness-label">Motivace</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-motivation-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-motivation-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-motivation-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-purple)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-motivation-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-purple)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-motivation-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-purple)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-motivation-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-purple)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-motivation-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-purple)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-motivation-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-motivation-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-motivation-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-motivation-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-motivation-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Focus/Concentration -->
+                    <div class="wellness-rating-item" id="wellness-focus" data-metric="focus_ability">
+                        <div class="wellness-item-header">
+                            <span class="wellness-icon">🧠</span>
+                            <span class="wellness-label">Soustředění</span>
+                        </div>
+                        <div class="wellness-stars-container">
+                            <div class="wellness-percentage" id="wellness-focus-percentage">-</div>
+                            <div class="wellness-stars-svg" id="wellness-focus-stars">
+                                <svg viewBox="0 0 260 50" xmlns="http://www.w3.org/2000/svg">
+                                    <defs>
+                                        <linearGradient id="wellness-focus-grad-0"><stop class="fill-stop" offset="0%" stop-color="var(--accent-cyan)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-focus-grad-1"><stop class="fill-stop" offset="0%" stop-color="var(--accent-cyan)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-focus-grad-2"><stop class="fill-stop" offset="0%" stop-color="var(--accent-cyan)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-focus-grad-3"><stop class="fill-stop" offset="0%" stop-color="var(--accent-cyan)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                        <linearGradient id="wellness-focus-grad-4"><stop class="fill-stop" offset="0%" stop-color="var(--accent-cyan)"/><stop class="empty-stop" offset="0%" stop-color="var(--text-muted)"/></linearGradient>
+                                    </defs>
+                                    <path class="wellness-star" data-star="0" fill="url(#wellness-focus-grad-0)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(0, 0)"/>
+                                    <path class="wellness-star" data-star="1" fill="url(#wellness-focus-grad-1)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(52, 0)"/>
+                                    <path class="wellness-star" data-star="2" fill="url(#wellness-focus-grad-2)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(104, 0)"/>
+                                    <path class="wellness-star" data-star="3" fill="url(#wellness-focus-grad-3)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(156, 0)"/>
+                                    <path class="wellness-star" data-star="4" fill="url(#wellness-focus-grad-4)" d="M26,2 L32,18 L50,18 L36,28 L41,45 L26,35 L11,45 L16,28 L2,18 L20,18 Z" transform="translate(208, 0)"/>
+                                </svg>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wellness notes section -->
+                <div class="wellness-notes-section">
+                    <label>📝 Ranní poznámky & pocity</label>
+                    <textarea id="wellness-notes" class="wellness-notes" placeholder="Jak se dnes cítíte? Co plánujete?" rows="3" maxlength="1000"></textarea>
+                    <div class="char-count"><span id="wellness-notes-count">0</span>/1000</div>
+                </div>
+
+                <!-- Overall wellness preview -->
+                <div class="wellness-overall-preview">
+                    <span class="wellness-overall-label">Celkový wellness score:</span>
+                    <span class="wellness-overall-value" id="wellness-overall-value">-</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="modal-btn secondary" onclick="closeStartDayModal()">Zrušit</button>
+                <button class="modal-btn primary" onclick="goToStartDayStep(2)">Pokračovat</button>
+            </div>
+        </div>
+
+        <!-- Step 2: Morning Briefing -->
+        <div class="start-day-step hidden" id="start-day-step-2">
             <div class="modal-header">
                 <h2>🌅 Dobré ráno!</h2>
                 <p>Tvůj denní briefing od FocusAI</p>
@@ -516,13 +712,13 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="modal-btn secondary" onclick="closeStartDayModal()">Zrušit</button>
-                <button class="modal-btn primary" onclick="goToStartDayStep(2)">Další →</button>
+                <button class="modal-btn secondary" onclick="goToStartDayStep(1)">← Zpět</button>
+                <button class="modal-btn primary" onclick="goToStartDayStep(3)">Další →</button>
             </div>
         </div>
 
-        <!-- Step 2: Session Planning -->
-        <div class="start-day-step hidden" id="start-day-step-2">
+        <!-- Step 3: Session Planning -->
+        <div class="start-day-step hidden" id="start-day-step-3">
             <div class="modal-header">
                 <h2>📋 Naplánuj si sessions</h2>
                 <p>Vyber kategorie a počet sessions na dnes</p>
@@ -540,13 +736,13 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="modal-btn secondary" onclick="goToStartDayStep(1)">← Zpět</button>
-                <button class="modal-btn primary" onclick="goToStartDayStep(3)">Další →</button>
+                <button class="modal-btn secondary" onclick="goToStartDayStep(2)">← Zpět</button>
+                <button class="modal-btn primary" onclick="goToStartDayStep(4)">Další →</button>
             </div>
         </div>
 
-        <!-- Step 3: Daily Challenge -->
-        <div class="start-day-step hidden" id="start-day-step-3">
+        <!-- Step 4: Daily Challenge -->
+        <div class="start-day-step hidden" id="start-day-step-4">
             <div class="modal-header">
                 <h2>⚔️ Denní výzva</h2>
                 <p>Přijmi výzvu a získej bonus XP!</p>
@@ -580,7 +776,7 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="modal-btn secondary" onclick="goToStartDayStep(2)">← Zpět</button>
+                <button class="modal-btn secondary" onclick="goToStartDayStep(3)">← Zpět</button>
                 <button class="modal-btn primary success" onclick="completeStartDay()">
                     ✓ Začít den
                 </button>

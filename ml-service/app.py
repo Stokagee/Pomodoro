@@ -431,6 +431,7 @@ def predict_quality():
         category: Category name (optional)
         sessions_today: Number of completed sessions today (default: 0)
         minutes_since_last: Minutes since last session ended (optional)
+        wellness: Today's wellness check-in data (optional, POST only)
 
     Returns:
         dict: Prediction with factors, confidence, and recommendation
@@ -469,6 +470,9 @@ def predict_quality():
     if minutes_since_last is None:
         minutes_since_last = request.args.get('minutes_since_last', type=int)
 
+    # Wellness data (only available via POST with JSON body)
+    wellness_data = data.get('wellness')
+
     try:
         sessions = get_sessions()
         predictor = SessionQualityPredictor(sessions)
@@ -478,7 +482,8 @@ def predict_quality():
             preset=preset,
             category=category,
             sessions_today=sessions_today,
-            minutes_since_last=minutes_since_last
+            minutes_since_last=minutes_since_last,
+            wellness_data=wellness_data
         )
         return jsonify(result)
     except Exception as e:
@@ -1018,6 +1023,8 @@ def ai_next_session_suggestion():
         task: Last task description (optional)
         hour: Current hour 0-23 (default: current hour)
         sessions: Sessions completed today (default: 0)
+        exclude_topic: Topic to exclude - for "Jiný nápad" functionality (optional)
+        bypass_cache: Force refresh without cache (default: false)
 
     Returns:
         dict: SessionSuggestion with category, topic, preset, reason, confidence
@@ -1029,6 +1036,12 @@ def ai_next_session_suggestion():
         hour = request.args.get('hour', datetime.now().hour, type=int)
         day_of_week = datetime.now().weekday()  # 0=Po, 6=Ne
         day_names = ['Pondeli', 'Utery', 'Streda', 'Ctvrtek', 'Patek', 'Sobota', 'Nedele']
+
+        # Get exclude_topic for "Jiný nápad" functionality
+        exclude_topic = request.args.get('exclude_topic', '')
+
+        # Get bypass_cache for force refresh
+        bypass_cache = request.args.get('bypass_cache', 'false').lower() == 'true'
 
         # Update categories from request (from user's config.json)
         categories_param = request.args.get('categories', '')
@@ -1054,7 +1067,11 @@ def ai_next_session_suggestion():
                 'role': 'Tester',
                 'style': 'pragmatic',
                 'goals': ['productivity', 'learning', 'balance']
-            }
+            },
+            # Exclude topic for "Jiný nápad"
+            'exclude_topic': exclude_topic,
+            # Force refresh without cache
+            'bypass_cache': bypass_cache
         }
 
         result = ai_generator.suggest_next_session_topic(context)

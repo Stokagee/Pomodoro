@@ -1236,8 +1236,10 @@ let aiSuggestionVisible = true;
 
 /**
  * Load AI suggestion for next session
+ * @param {string} excludeTopic - Topic to exclude (for "Jiný nápad" functionality)
+ * @param {boolean} bypassCache - Force refresh without cache (default: false)
  */
-async function loadAISuggestion() {
+async function loadAISuggestion(excludeTopic = '', bypassCache = false) {
     const panel = document.getElementById('ai-suggestion-panel');
     const idle = document.getElementById('ai-idle');
     const loading = document.getElementById('ai-loading');
@@ -1253,7 +1255,20 @@ async function loadAISuggestion() {
     error.classList.add('hidden');
 
     try {
-        const response = await fetch('/api/ai/next-session');
+        // Build URL with optional exclude_topic and bypass_cache parameters
+        let url = '/api/ai/next-session';
+        const params = [];
+        if (excludeTopic) {
+            params.push(`exclude_topic=${encodeURIComponent(excludeTopic)}`);
+        }
+        if (bypassCache) {
+            params.push(`bypass_cache=true`);
+        }
+        if (params.length > 0) {
+            url += '?' + params.join('&');
+        }
+
+        const response = await fetch(url);
         const data = await response.json();
 
         if (data && data.topic) {
@@ -1266,6 +1281,13 @@ async function loadAISuggestion() {
         console.error('AI suggestion failed:', err);
         showAIError();
     }
+}
+
+/**
+ * Force refresh AI suggestion (bypasses all caches)
+ */
+async function forceRefreshAISuggestion() {
+    await loadAISuggestion('', true); // bypassCache = true
 }
 
 /**
@@ -1340,9 +1362,12 @@ function showAISuggestionPanel() {
 }
 
 /**
- * Refresh AI suggestion (invalidate cache and reload)
+ * Refresh AI suggestion (invalidate cache and reload with different topic)
  */
 async function refreshAISuggestion() {
+    // Get current topic to exclude from next suggestion
+    const currentTopic = currentAISuggestion?.topic || '';
+
     // First invalidate the cache
     try {
         await fetch('/api/ai/invalidate-cache?type=next_session', { method: 'POST' });
@@ -1350,8 +1375,8 @@ async function refreshAISuggestion() {
         console.warn('Cache invalidation failed:', err);
     }
 
-    // Then reload suggestion
-    await loadAISuggestion();
+    // Then reload suggestion, excluding the current topic
+    await loadAISuggestion(currentTopic);
 }
 
 /**
@@ -1608,6 +1633,255 @@ let startDayData = null;
 let startDayCurrentStep = 1;
 let categoryPlannerData = {};
 
+// Wellness check-in data
+let wellnessData = {
+    sleep_quality: null,
+    energy_level: null,
+    mood: null,
+    stress_level: null,
+    motivation: null,
+    focus_ability: null
+};
+
+// Wellness metric configurations
+const WELLNESS_METRICS = {
+    sleep_quality: { id: 'sleep', color: 'var(--accent-blue)', label: 'Spánek' },
+    energy_level: { id: 'energy', color: 'var(--accent-green)', label: 'Energie' },
+    mood: { id: 'mood', color: 'var(--accent-orange)', label: 'Nálada' },
+    stress_level: { id: 'stress', color: 'var(--accent-red)', label: 'Stres', inverse: true },
+    motivation: { id: 'motivation', color: 'var(--accent-purple)', label: 'Motivace' },
+    focus_ability: { id: 'focus', color: 'var(--accent-cyan)', label: 'Soustředění' }
+};
+
+// Track wellness dragging state per metric
+let wellnessDragging = {};
+
+/**
+ * Initialize wellness rating handlers for all 6 metrics
+ */
+function initWellnessRatings() {
+    for (const [metricKey, config] of Object.entries(WELLNESS_METRICS)) {
+        const container = document.getElementById(`wellness-${config.id}`);
+        if (!container) continue;
+
+        const starsContainer = container.querySelector('.wellness-stars-svg');
+        if (!starsContainer) continue;
+
+        wellnessDragging[metricKey] = false;
+
+        // Mouse events
+        starsContainer.addEventListener('mousedown', (e) => {
+            wellnessDragging[metricKey] = true;
+            setWellnessRatingFromPosition(metricKey, e, starsContainer);
+        });
+
+        starsContainer.addEventListener('mousemove', (e) => {
+            if (wellnessDragging[metricKey]) {
+                setWellnessRatingFromPosition(metricKey, e, starsContainer);
+            }
+        });
+
+        starsContainer.addEventListener('mouseup', () => {
+            wellnessDragging[metricKey] = false;
+        });
+
+        starsContainer.addEventListener('mouseleave', () => {
+            wellnessDragging[metricKey] = false;
+        });
+
+        starsContainer.addEventListener('click', (e) => {
+            setWellnessRatingFromPosition(metricKey, e, starsContainer);
+        });
+
+        // Touch events for mobile
+        starsContainer.addEventListener('touchstart', (e) => {
+            e.preventDefault();
+            wellnessDragging[metricKey] = true;
+            setWellnessRatingFromPosition(metricKey, e.touches[0], starsContainer);
+        });
+
+        starsContainer.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            if (wellnessDragging[metricKey]) {
+                setWellnessRatingFromPosition(metricKey, e.touches[0], starsContainer);
+            }
+        });
+
+        starsContainer.addEventListener('touchend', () => {
+            wellnessDragging[metricKey] = false;
+        });
+    }
+
+    // Reset overall preview
+    updateWellnessOverall();
+}
+
+/**
+ * Calculate percentage from click/touch position
+ */
+function setWellnessRatingFromPosition(metricKey, event, container) {
+    const rect = container.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const width = rect.width;
+
+    // Calculate percentage (0-100) rounded to 5%
+    let percentage = (x / width) * 100;
+    percentage = Math.round(percentage / 5) * 5;
+    percentage = Math.max(0, Math.min(100, percentage));
+
+    setWellnessRating(metricKey, percentage);
+}
+
+/**
+ * Set wellness rating for a specific metric
+ */
+function setWellnessRating(metricKey, percentage) {
+    const config = WELLNESS_METRICS[metricKey];
+    if (!config) return;
+
+    // Store the value
+    wellnessData[metricKey] = percentage;
+
+    // Update star fills
+    updateWellnessStarsFill(config.id, percentage);
+
+    // Update percentage display
+    const percentEl = document.getElementById(`wellness-${config.id}-percentage`);
+    if (percentEl) {
+        percentEl.textContent = `${percentage}%`;
+    }
+
+    // Update overall wellness score
+    updateWellnessOverall();
+}
+
+/**
+ * Update star gradient fills for a wellness metric
+ */
+function updateWellnessStarsFill(metricId, percentage) {
+    const percentPerStar = 20;
+
+    for (let i = 0; i < 5; i++) {
+        const starStart = i * percentPerStar;
+        const starEnd = (i + 1) * percentPerStar;
+
+        let fillPercent;
+        if (percentage >= starEnd) {
+            fillPercent = 100;
+        } else if (percentage <= starStart) {
+            fillPercent = 0;
+        } else {
+            fillPercent = ((percentage - starStart) / percentPerStar) * 100;
+        }
+
+        // Update gradient stops
+        const gradient = document.getElementById(`wellness-${metricId}-grad-${i}`);
+        if (gradient) {
+            const fillStop = gradient.querySelector('.fill-stop');
+            const emptyStop = gradient.querySelector('.empty-stop');
+            if (fillStop && emptyStop) {
+                fillStop.setAttribute('offset', `${fillPercent}%`);
+                emptyStop.setAttribute('offset', `${fillPercent}%`);
+            }
+        }
+    }
+}
+
+/**
+ * Calculate and display overall wellness score
+ */
+function updateWellnessOverall() {
+    const weights = {
+        sleep_quality: 0.20,
+        energy_level: 0.20,
+        mood: 0.15,
+        stress_level: 0.15,  // Inverse: lower stress = better
+        motivation: 0.15,
+        focus_ability: 0.15
+    };
+
+    let totalWeight = 0;
+    let weightedSum = 0;
+    let filledCount = 0;
+
+    for (const [key, weight] of Object.entries(weights)) {
+        const value = wellnessData[key];
+        if (value !== null) {
+            filledCount++;
+            totalWeight += weight;
+            // Stress is inverse: low stress = good, so we use (100 - stress)
+            const effectiveValue = (key === 'stress_level') ? (100 - value) : value;
+            weightedSum += effectiveValue * weight;
+        }
+    }
+
+    // Calculate overall score
+    let overall = 0;
+    if (totalWeight > 0) {
+        overall = Math.round(weightedSum / totalWeight);
+    }
+
+    // Update overall display
+    const overallValueEl = document.getElementById('wellness-overall-value');
+    const overallBarEl = document.getElementById('wellness-overall-bar');
+    const overallLabelEl = document.getElementById('wellness-overall-label');
+
+    if (overallValueEl) {
+        overallValueEl.textContent = filledCount > 0 ? `${overall}%` : '--%';
+    }
+
+    if (overallBarEl) {
+        overallBarEl.style.width = `${overall}%`;
+
+        // Color based on score
+        if (overall >= 70) {
+            overallBarEl.style.backgroundColor = 'var(--accent-green)';
+        } else if (overall >= 40) {
+            overallBarEl.style.backgroundColor = 'var(--accent-orange)';
+        } else {
+            overallBarEl.style.backgroundColor = 'var(--accent-red)';
+        }
+    }
+
+    if (overallLabelEl) {
+        if (overall >= 80) {
+            overallLabelEl.textContent = 'Výborný stav';
+        } else if (overall >= 60) {
+            overallLabelEl.textContent = 'Dobrý stav';
+        } else if (overall >= 40) {
+            overallLabelEl.textContent = 'Průměrný stav';
+        } else if (filledCount > 0) {
+            overallLabelEl.textContent = 'Nízký stav';
+        } else {
+            overallLabelEl.textContent = 'Vyplňte hodnocení';
+        }
+    }
+
+    return overall;
+}
+
+/**
+ * Validate wellness step - at least 3 metrics should be filled
+ */
+function validateWellnessStep() {
+    const filledCount = Object.values(wellnessData).filter(v => v !== null).length;
+    return filledCount >= 3;
+}
+
+/**
+ * Pre-fill wellness data if already completed today
+ */
+function prefillWellnessData(checkin) {
+    if (!checkin) return;
+
+    for (const [metricKey, config] of Object.entries(WELLNESS_METRICS)) {
+        const value = checkin[metricKey];
+        if (value !== null && value !== undefined) {
+            setWellnessRating(metricKey, Math.round(value));
+        }
+    }
+}
+
 /**
  * Open the Start Day modal and load data
  */
@@ -1618,9 +1892,20 @@ async function openStartDayModal() {
     // Reset state
     startDayCurrentStep = 1;
     categoryPlannerData = {};
+    wellnessData = {
+        sleep_quality: null,
+        energy_level: null,
+        mood: null,
+        stress_level: null,
+        motivation: null,
+        focus_ability: null
+    };
 
     // Show modal
     modal.style.display = 'flex';
+
+    // Initialize wellness rating handlers
+    initWellnessRatings();
 
     // Reset to step 1
     goToStartDayStep(1);
@@ -1683,6 +1968,11 @@ async function loadStartDayData() {
 
         if (data.success) {
             startDayData = data;
+
+            // Pre-fill wellness data if already completed today
+            if (data.wellness_checkin) {
+                prefillWellnessData(data.wellness_checkin);
+            }
 
             // Render morning briefing
             renderMorningBriefing(data.morning_briefing);
@@ -1786,10 +2076,10 @@ function renderMorningBriefing(briefing) {
     const wellbeingEl = document.getElementById('briefing-wellbeing');
 
     if (!briefing) {
-        // Fallback when AI is unavailable
+        // Fallback when AI is completely unavailable
         if (yesterdayEl) yesterdayEl.textContent = 'AI analýza není dostupná. Pokračuj na plánování.';
         if (predictionEl) predictionEl.textContent = '-';
-        if (recommendationEl) recommendationEl.textContent = 'Vyber si kategorie dle vlastního uvážení.';
+        if (recommendationEl) recommendationEl.textContent = 'Doporučuji začít s Deep Work presetem.';
         if (wellbeingEl) wellbeingEl.textContent = 'Nezapomeň na pravidelné přestávky!';
         return;
     }
@@ -1801,6 +2091,22 @@ function renderMorningBriefing(briefing) {
         return;
     }
 
+    // Show fallback indicator if using PresetRecommender
+    if (briefing.fallback && briefing.using_preset_recommender) {
+        // Add visual indicator for fallback mode
+        if (recommendationEl) {
+            recommendationEl.innerHTML = '';
+            const indicator = document.createElement('span');
+            indicator.className = 'fallback-indicator';
+            indicator.textContent = '📊 ';
+            recommendationEl.appendChild(indicator);
+
+            const text = document.createElement('span');
+            text.textContent = briefing.recommendation || 'Doporučuji začít s Deep Work presetem.';
+            recommendationEl.appendChild(text);
+        }
+    }
+
     // Structured response from AIAnalyzer - use formatBriefingValue to handle objects
     if (yesterdayEl) {
         yesterdayEl.textContent = formatBriefingValue(
@@ -1810,25 +2116,56 @@ function renderMorningBriefing(briefing) {
         );
     }
     if (predictionEl) {
-        predictionEl.textContent = formatBriefingValue(
-            briefing.today_prediction || briefing.analysis?.prediction,
-            'prediction',
-            'Predikce není k dispozici'
-        );
+        // Handle both string and object prediction formats
+        let predictionText;
+        if (briefing.prediction && typeof briefing.prediction === 'object') {
+            const pred = briefing.prediction;
+            predictionText = `Očekávám ${pred.predicted_sessions || 4} sessions, produktivita ~${pred.productivity_prediction || 75}%`;
+        } else {
+            predictionText = formatBriefingValue(
+                briefing.today_prediction || briefing.analysis?.prediction,
+                'prediction',
+                'Predikce není k dispozici'
+            );
+        }
+        predictionEl.textContent = predictionText;
     }
-    if (recommendationEl) {
-        recommendationEl.textContent = formatBriefingValue(
-            briefing.recommendation || briefing.analysis?.focus,
-            'recommendation',
-            'Vyber si kategorie dle vlastního uvážení'
-        );
+    if (recommendationEl && !briefing.fallback) {
+        // Only set recommendation text if not already set by fallback handler above
+        let recText;
+        // Handle both old format (recommendation) and new format (optimal_schedule)
+        if (briefing.recommendation) {
+            recText = formatBriefingValue(briefing.recommendation, 'recommendation', null);
+        } else if (briefing.optimal_schedule && briefing.optimal_schedule.length > 0) {
+            // Use first item from optimal_schedule as recommendation
+            const first = briefing.optimal_schedule[0];
+            recText = `${first.activity} (${first.preset} preset) - ${first.reason}`;
+        } else if (briefing.analysis?.focus) {
+            recText = formatBriefingValue(briefing.analysis.focus, 'recommendation', null);
+        }
+
+        if (recText) {
+            recommendationEl.textContent = recText;
+        } else {
+            recommendationEl.textContent = 'Doporučuji začít s Deep Work presetem.';
+        }
     }
     if (wellbeingEl) {
-        wellbeingEl.textContent = formatBriefingValue(
-            briefing.wellbeing || briefing.analysis?.wellbeing,
-            'wellbeing',
-            'Držím ti palce!'
-        );
+        // Handle both old format (wellbeing) and new format (wellbeing_check)
+        let wellbeingText;
+        if (briefing.wellbeing) {
+            wellbeingText = formatBriefingValue(briefing.wellbeing, 'wellbeing', null);
+        } else if (briefing.wellbeing_check?.suggestion) {
+            wellbeingText = briefing.wellbeing_check.suggestion;
+        } else if (briefing.analysis?.wellbeing) {
+            wellbeingText = formatBriefingValue(briefing.analysis.wellbeing, 'wellbeing', null);
+        }
+
+        if (wellbeingText) {
+            wellbeingEl.textContent = wellbeingText;
+        } else {
+            wellbeingEl.textContent = 'Držím ti palce!';
+        }
     }
 }
 
@@ -1948,15 +2285,39 @@ async function completeStartDay() {
     const acceptChallengeEl = document.getElementById('accept-challenge');
     const challengeAccepted = acceptChallengeEl ? acceptChallengeEl.checked : false;
 
+    // Prepare wellness data - only include filled metrics
+    const wellnessPayload = {};
+    let hasWellnessData = false;
+    for (const [key, value] of Object.entries(wellnessData)) {
+        if (value !== null) {
+            wellnessPayload[key] = value;
+            hasWellnessData = true;
+        }
+    }
+
+    // Capture wellness notes (if provided)
+    const wellnessNotesEl = document.getElementById('wellness-notes');
+    if (wellnessNotesEl && wellnessNotesEl.value.trim()) {
+        wellnessPayload.notes = wellnessNotesEl.value.trim();
+        hasWellnessData = true;  // Ensure wellness is sent even if only notes filled
+    }
+
     try {
+        const requestBody = {
+            themes: themes,
+            notes: notes,
+            challenge_accepted: challengeAccepted
+        };
+
+        // Include wellness data if any metrics were filled
+        if (hasWellnessData) {
+            requestBody.wellness = wellnessPayload;
+        }
+
         const response = await fetch('/api/start-day', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                themes: themes,
-                notes: notes,
-                challenge_accepted: challengeAccepted
-            })
+            body: JSON.stringify(requestBody)
         });
 
         const result = await response.json();
@@ -1990,6 +2351,15 @@ document.addEventListener('DOMContentLoaded', () => {
         // Request notification permission
         if ('Notification' in window && Notification.permission === 'default') {
             Notification.requestPermission();
+        }
+
+        // Wellness notes character counter
+        const wellnessNotesEl = document.getElementById('wellness-notes');
+        const wellnessCountEl = document.getElementById('wellness-notes-count');
+        if (wellnessNotesEl && wellnessCountEl) {
+            wellnessNotesEl.addEventListener('input', () => {
+                wellnessCountEl.textContent = wellnessNotesEl.value.length;
+            });
         }
 
         // FocusAI suggestion is now loaded on-demand via button click

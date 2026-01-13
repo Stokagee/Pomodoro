@@ -35,8 +35,73 @@ class MockCursor:
             session_id = len(self.data_store.get('sessions', [])) + 1
             self._results = [{'id': session_id}]
             self.rowcount = 1
+        elif 'select count(*)' in query_lower and 'from sessions' in query_lower:
+            # Count query for sessions
+            sessions = self.data_store.get('sessions', [])
+            count = len([s for s in sessions if s.get('completed', True)])
+            self._results = [{'count': count}]
+        elif 'select coalesce(sum(duration_minutes)' in query_lower:
+            # Sum of minutes
+            sessions = self.data_store.get('sessions', [])
+            total = sum(s.get('duration_minutes', 0) for s in sessions if s.get('completed', True))
+            self._results = [{'total': total}]
+        elif 'select count(distinct category)' in query_lower:
+            # Distinct category count
+            sessions = self.data_store.get('sessions', [])
+            categories = set(s.get('category', '') for s in sessions if s.get('completed', True))
+            self._results = [{'count': len(categories)}]
+        elif 'group by category' in query_lower and 'order by count' in query_lower:
+            # Max category query
+            sessions = self.data_store.get('sessions', [])
+            cat_counts = {}
+            for s in sessions:
+                if s.get('completed', True):
+                    cat = s.get('category', 'Unknown')
+                    cat_counts[cat] = cat_counts.get(cat, 0) + 1
+            if cat_counts:
+                max_cat = max(cat_counts.items(), key=lambda x: x[1])
+                self._results = [{'category': max_cat[0], 'count': max_cat[1]}]
+            else:
+                self._results = []
+        elif 'select avg(productivity_rating)' in query_lower:
+            # Average rating query
+            sessions = self.data_store.get('sessions', [])
+            ratings = [s['productivity_rating'] for s in sessions
+                      if s.get('productivity_rating') is not None and s.get('completed', True)]
+            avg = sum(ratings) / len(ratings) if ratings else None
+            self._results = [{'avg_rating': avg}]
         elif 'select' in query_lower and 'from sessions' in query_lower:
-            self._results = self.data_store.get('sessions', [])
+            # Add id field to sessions if missing
+            sessions = self.data_store.get('sessions', [])
+            for i, s in enumerate(sessions):
+                if 'id' not in s:
+                    s['id'] = i + 1
+            self._results = sessions
+        elif 'insert into daily_focus' in query_lower or 'on conflict' in query_lower:
+            # Upsert daily focus
+            focus_id = len(self.data_store.get('daily_focus', [])) + 1
+            self._results = [{'id': focus_id}]
+            self.rowcount = 1
+        elif 'update daily_focus' in query_lower:
+            self._results = []
+            self.rowcount = 1
+        elif 'select' in query_lower and 'from daily_focus' in query_lower:
+            self._results = self.data_store.get('daily_focus', [])
+        elif 'insert into insights' in query_lower:
+            insight_id = len(self.data_store.get('insights', [])) + 1
+            self._results = [{'id': insight_id}]
+            self.rowcount = 1
+        elif 'select' in query_lower and 'from insights' in query_lower:
+            self._results = self.data_store.get('insights', [])
+        elif 'insert into ai_cache' in query_lower:
+            cache_id = len(self.data_store.get('ai_cache', [])) + 1
+            self._results = [{'id': cache_id}]
+            self.rowcount = 1
+        elif 'select' in query_lower and 'from ai_cache' in query_lower:
+            self._results = self.data_store.get('ai_cache', [])
+        elif 'delete from ai_cache' in query_lower:
+            self.data_store['ai_cache'] = []
+            self.rowcount = 1
         elif 'delete from sessions' in query_lower:
             self.data_store['sessions'] = []
             self.rowcount = len(self.data_store.get('sessions', []))
@@ -44,6 +109,45 @@ class MockCursor:
             self._results = [{'?column?': 1}]
         elif 'pg_extension' in query_lower:
             self._results = [{'extname': 'vector'}]
+        elif 'select' in query_lower and 'from achievements' in query_lower:
+            self._results = self.data_store.get('achievements', [])
+        elif 'select' in query_lower and 'from streaks' in query_lower:
+            streaks = self.data_store.get('streaks', [])
+            self._results = streaks if streaks else [{
+                'id': 1,
+                'user_id': 'default',
+                'current_streak': 0,
+                'longest_streak': 0,
+                'last_session_date': None,
+                'streak_start_date': None,
+                'created_at': datetime.now(),
+                'updated_at': datetime.now()
+            }]
+        elif 'select' in query_lower and 'from daily_challenges' in query_lower:
+            self._results = self.data_store.get('daily_challenges', [])
+        elif 'insert into daily_challenges' in query_lower:
+            challenge_id = len(self.data_store.get('daily_challenges', [])) + 1
+            self._results = [{'id': challenge_id}]
+            self.rowcount = 1
+        elif 'select' in query_lower and 'from wellness_checkins' in query_lower:
+            self._results = self.data_store.get('wellness_checkins', [])
+        elif 'select' in query_lower and 'from user_profile' in query_lower:
+            profiles = self.data_store.get('user_profile', [])
+            self._results = profiles if profiles else [{
+                'id': 1,
+                'user_id': 'default',
+                'xp': 0,
+                'total_xp_earned': 0,
+                'level': 1,
+                'title': 'Beginner',
+                'streak_freezes_available': 3,
+                'streak_freeze_used_dates': [],
+                'vacation_mode': False,
+                'vacation_days_remaining': 0,
+                'vacation_start_date': None,
+                'created_at': datetime.now(),
+                'updated_at': datetime.now()
+            }]
         else:
             self._results = []
         self._index = 0

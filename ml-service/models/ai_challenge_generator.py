@@ -781,25 +781,33 @@ Vrat JSON v tomto PRESNEM formatu:
                 - last_task: Last task description
                 - time_of_day: Current hour (0-23)
                 - sessions_today: Number of sessions completed today
+                - exclude_topic: Topic to exclude (for "Jiný nápad" functionality)
 
         Returns:
             SessionSuggestion as dict
         """
+        # Check if we need to skip cache (user wants different suggestion)
+        exclude_topic = context.get('exclude_topic', '')
+        bypass_cache = context.get('bypass_cache', False)  # Force refresh without cache
+
         cache_key = self._get_cache_key("next_session", {
+            "date": datetime.now().strftime("%Y-%m-%d"),  # Include date for daily variety
             "hour": context.get('time_of_day', 12),
             "sessions": context.get('sessions_today', 0)
         })
 
-        # Shorter cache for quick suggestions
-        if self._is_cache_valid(cache_key, max_age_hours=0.25):  # 15 minutes
+        # Skip cache if exclude_topic is provided OR bypass_cache is True
+        if not exclude_topic and not bypass_cache and self._is_cache_valid(cache_key, max_age_hours=0.25):  # 15 minutes
             return self._cache[cache_key]
 
         # Try AI generation with shorter timeout
         if self.enabled:
             suggestion = self._generate_ai_session_suggestion(context)
             if suggestion:
-                self._cache[cache_key] = suggestion
-                self._cache_expiry[cache_key] = datetime.now() + timedelta(minutes=15)
+                # Only cache if not excluding topic (normal request)
+                if not exclude_topic:
+                    self._cache[cache_key] = suggestion
+                    self._cache_expiry[cache_key] = datetime.now() + timedelta(minutes=15)
                 return suggestion
 
         # Fallback
@@ -871,7 +879,11 @@ CRITICAL RULES:
         job_hunting_count = categories_breakdown.get('Job Hunting', 0)
         job_hunting_note = "ALERT: No Job Hunting this week!" if job_hunting_count == 0 else f"Job Hunting: {job_hunting_count}x this week"
 
-        prompt = f"""Suggest next Pomodoro session.
+        # Build exclusion note for "Jiný nápad" functionality
+        exclude_topic = context.get('exclude_topic', '')
+        exclusion_note = f"\n\nIMPORTANT: User wants a DIFFERENT suggestion. Do NOT suggest this topic: '{exclude_topic}'. Suggest something completely different!\n" if exclude_topic else ""
+
+        prompt = f"""Suggest next Pomodoro session.{exclusion_note}
 
 CURRENT CONTEXT:
 - Time: {hour}:00 ({time_context})

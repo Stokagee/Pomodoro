@@ -635,6 +635,61 @@ class AIAnalyzer:
             'timestamp': datetime.now().isoformat()
         }
 
+    def _get_preset_recommender_fallback(self) -> Dict:
+        """Create recommendation using PresetRecommender as fallback when AI is unavailable."""
+        from models.preset_recommender import PresetRecommender
+
+        try:
+            # Get sessions for PresetRecommender
+            sessions = self._get_sessions_with_notes(30)
+
+            # Create preset recommendation
+            recommender = PresetRecommender(sessions)
+            rec = recommender.recommend()
+
+            # Calculate predicted sessions based on confidence
+            confidence = rec.get('confidence', 0.5)
+            predicted_sessions = max(3, int(confidence * 8))  # 3-8 sessions
+            productivity_prediction = int(confidence * 100)
+
+            return {
+                'ai_available': False,
+                'fallback': True,
+                'from_cache': False,
+                'using_preset_recommender': True,  # Indicator for frontend
+                'yesterday_summary': rec.get('reason', ''),
+                'recommendation': rec.get('reason', 'Doporučuji začít s Deep Work presetem.'),
+                'prediction': {
+                    'predicted_sessions': predicted_sessions,
+                    'productivity_prediction': productivity_prediction,
+                    'best_hours': '9:00 - 12:00'
+                },
+                'wellbeing': 'Dbej na pravidelné přestávky a hydrataci.',
+                'generated_at': datetime.now().isoformat(),
+                'recommended_preset': rec.get('recommended_preset', 'deep_work'),
+                'confidence': confidence
+            }
+        except Exception as e:
+            logger.error(f"PresetRecommender fallback failed: {e}")
+            # Ultimate fallback if even PresetRecommender fails
+            return {
+                'ai_available': False,
+                'fallback': True,
+                'from_cache': False,
+                'using_preset_recommender': True,
+                'yesterday_summary': 'Zatím nemám dostatek dat pro analýzu.',
+                'recommendation': 'Doporučuji začít s Deep Work presetem (52 min práce / 17 min přestávka).',
+                'prediction': {
+                    'predicted_sessions': 4,
+                    'productivity_prediction': 75,
+                    'best_hours': '9:00 - 12:00'
+                },
+                'wellbeing': 'Dbej na pravidelné přestávky a hydrataci.',
+                'generated_at': datetime.now().isoformat(),
+                'recommended_preset': 'deep_work',
+                'confidence': 0.5
+            }
+
     # =========================================================================
     # PUBLIC ANALYSIS METHODS
     # =========================================================================
@@ -648,7 +703,8 @@ class AIAnalyzer:
 
         sessions = self._get_sessions_with_notes(30)
         if not sessions:
-            return self._create_fallback('morning_briefing', 'No session data')
+            # Use PresetRecommender fallback instead of empty fallback
+            return self._get_preset_recommender_fallback()
 
         profile = self._get_user_profile()
         today = datetime.now()
@@ -694,7 +750,8 @@ class AIAnalyzer:
             self.cache.set_cache('morning_briefing', result)
             return result
 
-        return self._create_fallback('morning_briefing')
+        # Use PresetRecommender fallback when LLM fails
+        return self._get_preset_recommender_fallback()
 
     def evening_review(self) -> Dict:
         """Generate evening review and reflection."""

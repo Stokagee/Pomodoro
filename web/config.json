@@ -36,7 +36,7 @@
   "daily_goal_sessions": 10,
   "sound_enabled": false,
   "notification_enabled": true,
-  "auto_start_break": false,
+  "auto_start_break": true,
   "show_time_in_tab": false,
   "categories": [
     "SOAP",

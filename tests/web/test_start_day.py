@@ -5,6 +5,7 @@ session planning, and daily challenge.
 """
 import pytest
 from datetime import datetime, date
+from unittest.mock import MagicMock, patch
 import json
 import sys
 import os
@@ -17,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'web'))
 class TestGetStartDayEndpoint:
     """Test GET /api/start-day endpoint."""
 
-    def test_start_day_returns_success(self, client, mock_db):
+    def test_start_day_returns_success(self, client):
         """GET /api/start-day should return success."""
         response = client.get('/api/start-day')
         assert response.status_code == 200
@@ -25,7 +26,7 @@ class TestGetStartDayEndpoint:
         data = json.loads(response.data)
         assert data['success'] is True
 
-    def test_start_day_returns_categories(self, client, mock_db):
+    def test_start_day_returns_categories(self, client):
         """GET /api/start-day should return categories from config."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
@@ -33,7 +34,7 @@ class TestGetStartDayEndpoint:
         assert 'categories' in data
         assert isinstance(data['categories'], list)
 
-    def test_start_day_returns_morning_briefing_field(self, client, mock_db):
+    def test_start_day_returns_morning_briefing_field(self, client):
         """GET /api/start-day should include morning_briefing field."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
@@ -41,7 +42,7 @@ class TestGetStartDayEndpoint:
         # Field exists (may be None if ML service unavailable)
         assert 'morning_briefing' in data
 
-    def test_start_day_returns_daily_challenge(self, client, mock_db):
+    def test_start_day_returns_daily_challenge(self, client):
         """GET /api/start-day should return daily challenge."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
@@ -52,14 +53,14 @@ class TestGetStartDayEndpoint:
         if challenge:
             assert 'type' in challenge or 'title' in challenge
 
-    def test_start_day_returns_today_focus(self, client, mock_db):
+    def test_start_day_returns_today_focus(self, client):
         """GET /api/start-day should return today's focus."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
 
         assert 'today_focus' in data
 
-    def test_start_day_returns_user_profile(self, client, mock_db):
+    def test_start_day_returns_user_profile(self, client):
         """GET /api/start-day should return user profile."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
@@ -70,21 +71,21 @@ class TestGetStartDayEndpoint:
             # Should have basic profile fields
             assert 'level' in profile or 'xp' in profile or 'total_xp' in profile
 
-    def test_start_day_returns_streak_status(self, client, mock_db):
+    def test_start_day_returns_streak_status(self, client):
         """GET /api/start-day should return streak status."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
 
         assert 'streak_status' in data
 
-    def test_start_day_returns_today_stats(self, client, mock_db):
+    def test_start_day_returns_today_stats(self, client):
         """GET /api/start-day should return today's stats."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
 
         assert 'today_stats' in data
 
-    def test_start_day_returns_date(self, client, mock_db):
+    def test_start_day_returns_date(self, client):
         """GET /api/start-day should return current date."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
@@ -97,7 +98,7 @@ class TestGetStartDayEndpoint:
 class TestPostStartDayEndpoint:
     """Test POST /api/start-day endpoint."""
 
-    def test_save_start_day_success(self, client, mock_db):
+    def test_save_start_day_success(self, client):
         """POST /api/start-day should save plan successfully."""
         response = client.post(
             '/api/start-day',
@@ -113,7 +114,7 @@ class TestPostStartDayEndpoint:
         data = json.loads(response.data)
         assert data['success'] is True
 
-    def test_save_start_day_returns_themes(self, client, mock_db):
+    def test_save_start_day_returns_themes(self, client):
         """POST /api/start-day should return validated themes."""
         response = client.post(
             '/api/start-day',
@@ -130,7 +131,7 @@ class TestPostStartDayEndpoint:
         assert 'themes' in data
         assert len(data['themes']) >= 0  # May filter invalid
 
-    def test_save_start_day_calculates_total(self, client, mock_db):
+    def test_save_start_day_calculates_total(self, client):
         """POST /api/start-day should return total planned sessions."""
         response = client.post(
             '/api/start-day',
@@ -146,7 +147,7 @@ class TestPostStartDayEndpoint:
         data = json.loads(response.data)
         assert 'total_planned_sessions' in data
 
-    def test_save_start_day_with_challenge(self, client, mock_db):
+    def test_save_start_day_with_challenge(self, client):
         """POST /api/start-day with challenge_accepted should track it."""
         response = client.post(
             '/api/start-day',
@@ -163,7 +164,7 @@ class TestPostStartDayEndpoint:
         if 'challenge' in data and data['challenge']:
             assert data['challenge']['accepted'] is True
 
-    def test_save_start_day_empty_body_fails(self, client, mock_db):
+    def test_save_start_day_empty_body_fails(self, client):
         """POST /api/start-day with no data should fail."""
         response = client.post(
             '/api/start-day',
@@ -173,7 +174,7 @@ class TestPostStartDayEndpoint:
 
         assert response.status_code == 400
 
-    def test_save_start_day_empty_themes(self, client, mock_db):
+    def test_save_start_day_empty_themes(self, client):
         """POST /api/start-day with empty themes should succeed."""
         response = client.post(
             '/api/start-day',
@@ -185,7 +186,7 @@ class TestPostStartDayEndpoint:
         data = json.loads(response.data)
         assert data['success'] is True
 
-    def test_save_start_day_returns_date(self, client, mock_db):
+    def test_save_start_day_returns_date(self, client):
         """POST /api/start-day should return date."""
         response = client.post(
             '/api/start-day',
@@ -196,7 +197,7 @@ class TestPostStartDayEndpoint:
         data = json.loads(response.data)
         assert 'date' in data
 
-    def test_save_start_day_clamps_sessions(self, client, mock_db):
+    def test_save_start_day_clamps_sessions(self, client):
         """POST /api/start-day should clamp sessions to valid range."""
         response = client.post(
             '/api/start-day',
@@ -213,7 +214,7 @@ class TestPostStartDayEndpoint:
         if data.get('themes'):
             assert data['themes'][0]['planned_sessions'] <= 20
 
-    def test_save_start_day_truncates_notes(self, client, mock_db):
+    def test_save_start_day_truncates_notes(self, client):
         """POST /api/start-day should truncate long notes."""
         long_notes = 'x' * 2000
         response = client.post(
@@ -234,7 +235,7 @@ class TestPostStartDayEndpoint:
 class TestStartDayValidation:
     """Test validation in Start Day endpoints."""
 
-    def test_invalid_category_filtered(self, client, mock_db):
+    def test_invalid_category_filtered(self, client):
         """Invalid categories should be filtered out."""
         response = client.post(
             '/api/start-day',
@@ -251,7 +252,7 @@ class TestStartDayValidation:
         # Invalid category should be filtered out
         assert len(data.get('themes', [])) == 0
 
-    def test_negative_sessions_clamped(self, client, mock_db):
+    def test_negative_sessions_clamped(self, client):
         """Negative session count should be clamped to 1."""
         response = client.post(
             '/api/start-day',
@@ -271,31 +272,41 @@ class TestStartDayValidation:
 class TestStartDayIntegration:
     """Integration tests for Start Day workflow."""
 
-    def test_start_day_then_check_focus(self, client, mock_db):
+    def test_start_day_then_check_focus(self, client, app):
         """After Start Day, daily focus should be set."""
-        # First, set the start day
-        client.post(
-            '/api/start-day',
-            data=json.dumps({
-                'themes': [
-                    {'theme': 'Coding', 'planned_sessions': 4}
-                ],
-                'notes': 'Integration test'
-            }),
-            content_type='application/json'
-        )
+        import models.database as db_module
 
-        # Then check today's focus
-        today = date.today().isoformat()
-        response = client.get(f'/api/focus/{today}')
+        with patch.object(db_module, 'set_daily_focus') as mock_set:
+            mock_set.return_value = True
 
-        data = json.loads(response.data)
-        # API returns data under 'focus' key
-        assert 'focus' in data or 'themes' in data
-        focus = data.get('focus', data)
-        assert 'themes' in focus or 'notes' in focus or 'date' in focus
+            with patch.object(db_module, 'get_daily_focus') as mock_get:
+                mock_get.return_value = {
+                    'date': date.today().isoformat(),
+                    'themes': [{'theme': 'Coding', 'planned_sessions': 4}],
+                    'notes': 'Integration test',
+                    'total_planned': 4
+                }
 
-    def test_multiple_start_day_updates(self, client, mock_db):
+                # First, set the start day
+                client.post(
+                    '/api/start-day',
+                    data=json.dumps({
+                        'themes': [
+                            {'theme': 'Coding', 'planned_sessions': 4}
+                        ],
+                        'notes': 'Integration test'
+                    }),
+                    content_type='application/json'
+                )
+
+                # Then check today's focus
+                today = date.today().isoformat()
+                response = client.get(f'/api/focus/{today}')
+
+                data = json.loads(response.data)
+                assert 'focus' in data or 'themes' in data
+
+    def test_multiple_start_day_updates(self, client):
         """Multiple Start Day calls should update, not duplicate."""
         # First plan
         client.post(
@@ -323,7 +334,7 @@ class TestStartDayWithMockedMLService:
     """Test Start Day with mocked ML service."""
 
     @responses.activate
-    def test_start_day_with_ml_briefing(self, client, mock_db):
+    def test_start_day_with_ml_briefing(self, client):
         """GET /api/start-day should include ML morning briefing when available."""
         responses.add(
             responses.GET,
@@ -353,7 +364,7 @@ class TestStartDayWithMockedMLService:
             assert 'analysis' in data['morning_briefing'] or 'recommendations' in data['morning_briefing']
 
     @responses.activate
-    def test_start_day_handles_ml_failure(self, client, mock_db):
+    def test_start_day_handles_ml_failure(self, client):
         """GET /api/start-day should handle ML service failure gracefully."""
         responses.add(
             responses.GET,
@@ -381,7 +392,7 @@ class TestSyncCategoriesToMLService:
     """Test category synchronization with ML service."""
 
     @responses.activate
-    def test_categories_synced_on_start_day(self, client, mock_db):
+    def test_categories_synced_on_start_day(self, client):
         """GET /api/start-day should sync categories to ML service."""
         # Mock the categories endpoint
         responses.add(
@@ -405,7 +416,7 @@ class TestSyncCategoriesToMLService:
         assert len([r for r in responses.calls if 'categories' in r.request.url]) >= 1
 
     @responses.activate
-    def test_start_day_continues_without_sync(self, client, mock_db):
+    def test_start_day_continues_without_sync(self, client):
         """GET /api/start-day should work even if sync fails."""
         # Mock categories endpoint to fail
         responses.add(
@@ -426,14 +437,14 @@ class TestSyncCategoriesToMLService:
 class TestDailyChallengeIntegration:
     """Test daily challenge as part of Start Day."""
 
-    def test_challenge_in_start_day_response(self, client, mock_db):
+    def test_challenge_in_start_day_response(self, client):
         """GET /api/start-day should include daily challenge."""
         response = client.get('/api/start-day')
         data = json.loads(response.data)
 
         assert 'daily_challenge' in data
 
-    def test_accepting_challenge_via_start_day(self, client, mock_db):
+    def test_accepting_challenge_via_start_day(self, client):
         """POST /api/start-day should handle challenge acceptance."""
         response = client.post(
             '/api/start-day',

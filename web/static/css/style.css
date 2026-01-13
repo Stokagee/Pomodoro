@@ -3387,6 +3387,181 @@ body {
     border-top: 1px solid var(--border-color);
 }
 
+/* =============================================================================
+   Wellness Check-in Styles
+   ============================================================================= */
+
+.wellness-checkin-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.25rem;
+}
+
+.wellness-rating-item {
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    padding: 1rem;
+    border: 1px solid var(--border-color);
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.wellness-rating-item:hover {
+    border-color: var(--accent-orange);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.wellness-item-header {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+}
+
+.wellness-icon {
+    font-size: 1.25rem;
+}
+
+.wellness-label {
+    font-weight: 500;
+    font-size: 0.9rem;
+    color: var(--text-primary);
+}
+
+.wellness-hint {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+.wellness-stars-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.wellness-percentage {
+    font-size: 1.25rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    min-width: 3rem;
+    text-align: center;
+}
+
+.wellness-stars-svg {
+    cursor: pointer;
+    width: 100%;
+    max-width: 200px;
+    height: 40px;
+}
+
+.wellness-stars-svg svg {
+    width: 100%;
+    height: 100%;
+}
+
+.wellness-star {
+    cursor: pointer;
+    transition: transform 0.1s;
+}
+
+.wellness-star:hover {
+    transform: scale(1.1);
+}
+
+/* Overall wellness preview */
+.wellness-overall-preview {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: linear-gradient(135deg, var(--accent-green-bg, rgba(34, 197, 94, 0.1)), var(--accent-blue-bg, rgba(59, 130, 246, 0.1)));
+    border-radius: 12px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.wellness-overall-label {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+}
+
+.wellness-overall-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--accent-green, #22c55e);
+}
+
+/* Wellness notes section */
+.wellness-notes-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background: var(--bg-secondary);
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+}
+
+.wellness-notes-section label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+}
+
+.wellness-notes {
+    width: 100%;
+    padding: 0.75rem;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: inherit;
+    font-size: 0.9rem;
+    resize: vertical;
+    min-height: 80px;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.wellness-notes:focus {
+    outline: none;
+    border-color: var(--accent-purple, #8b5cf6);
+    box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
+}
+
+.wellness-notes::placeholder {
+    color: var(--text-muted);
+    opacity: 0.7;
+}
+
+.char-count {
+    text-align: right;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.25rem;
+}
+
+/* Mobile responsive */
+@media (max-width: 600px) {
+    .wellness-checkin-grid {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+    }
+
+    .wellness-rating-item {
+        padding: 0.875rem;
+    }
+
+    .wellness-stars-svg {
+        max-width: 180px;
+        height: 35px;
+    }
+
+    .wellness-percentage {
+        font-size: 1.1rem;
+    }
+}
+
 /* Briefing Sections */
 .briefing-loading {
     display: flex;
@@ -3443,6 +3618,12 @@ body {
     color: var(--accent-red);
     background: rgba(239, 68, 68, 0.1);
     border-radius: var(--radius);
+}
+
+/* Fallback indicator for PresetRecommender mode */
+.fallback-indicator {
+    opacity: 0.7;
+    margin-right: 0.25rem;
 }
 
 /* Category Planner */

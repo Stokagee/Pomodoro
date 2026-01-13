@@ -104,7 +104,7 @@ SESSIONS_ANALYZED = Gauge(
 # COST ESTIMATION
 # =============================================================================
 
-# Pricing per 1M tokens (as of 2024)
+# Pricing per 1M tokens (as of 2025)
 PRICING = {
     'gpt-4o-mini': {'input': 0.15, 'output': 0.60},
     'gpt-4o': {'input': 2.50, 'output': 10.00},
@@ -112,6 +112,8 @@ PRICING = {
     'gpt-3.5-turbo': {'input': 0.50, 'output': 1.50},
     'deepseek-chat': {'input': 0.14, 'output': 0.28},
     'deepseek-coder': {'input': 0.14, 'output': 0.28},
+    'glm-4.5-air': {'input': 0.15, 'output': 0.80},  # Z.ai GLM-4.5-Air
+    'glm-4.5': {'input': 0.20, 'output': 1.10},       # Z.ai GLM-5 (full)
     'qwen2.5:0.5b': {'input': 0.0, 'output': 0.0},  # Local/free
     'qwen2.5:14b': {'input': 0.0, 'output': 0.0},   # Local/free
 }
