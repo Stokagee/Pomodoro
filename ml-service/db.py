@@ -6,7 +6,7 @@ Provides connection pooling and query helpers.
 import os
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional, Any
 from contextlib import contextmanager
 
@@ -439,3 +439,119 @@ def get_rag_context(query_embedding: List[float], limit: int = 5) -> str:
         context += f"- [{s['date']}] {s['category']}: {s['notes'][:150]}...\n"
 
     return context
+
+
+# =============================================================================
+# WELLNESS CHECK-IN QUERIES (for AI integration)
+# =============================================================================
+
+def get_wellness_checkin(target_date=None) -> Optional[Dict]:
+    """Get wellness check-in for a specific date (default: today)."""
+    if target_date is None:
+        target_date = date.today()
+    elif isinstance(target_date, str):
+        target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
+
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT id, date, sleep_quality, energy_level, mood, stress_level,
+                       motivation, focus_ability, overall_wellness, notes,
+                       created_at, updated_at
+                FROM wellness_checkins
+                WHERE date = %s
+            """, (target_date,))
+            wellness = cur.fetchone()
+
+        if wellness:
+            wellness = dict(wellness)
+            wellness['id'] = str(wellness['id'])
+            wellness['date'] = wellness['date'].isoformat() if isinstance(wellness['date'], date) else wellness['date']
+            if wellness.get('created_at'):
+                wellness['created_at'] = wellness['created_at'].isoformat()
+            if wellness.get('updated_at'):
+                wellness['updated_at'] = wellness['updated_at'].isoformat()
+
+            # Convert Decimal to float for JSON serialization
+            for key in ['sleep_quality', 'energy_level', 'mood', 'stress_level',
+                        'motivation', 'focus_ability', 'overall_wellness']:
+                if wellness.get(key) is not None:
+                    wellness[key] = float(wellness[key])
+
+        return wellness
+    except Exception as e:
+        logger.error(f"Error fetching wellness check-in: {e}")
+        return None
+
+
+def get_wellness_history(days: int = 7) -> List[Dict]:
+    """Get wellness check-in history for trend analysis."""
+    start_date = date.today() - timedelta(days=days)
+
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT id, date, sleep_quality, energy_level, mood, stress_level,
+                       motivation, focus_ability, overall_wellness, notes,
+                       created_at
+                FROM wellness_checkins
+                WHERE date >= %s
+                ORDER BY date DESC
+            """, (start_date,))
+            history = [dict(row) for row in cur.fetchall()]
+
+        for w in history:
+            w['id'] = str(w['id'])
+            w['date'] = w['date'].isoformat() if isinstance(w['date'], date) else w['date']
+            if w.get('created_at'):
+                w['created_at'] = w['created_at'].isoformat()
+
+            # Convert Decimal to float
+            for key in ['sleep_quality', 'energy_level', 'mood', 'stress_level',
+                        'motivation', 'focus_ability', 'overall_wellness']:
+                if w.get(key) is not None:
+                    w[key] = float(w[key])
+
+        return history
+    except Exception as e:
+        logger.error(f"Error fetching wellness history: {e}")
+        return []
+
+
+def get_wellness_average(days: int = 7) -> Optional[Dict]:
+    """Get average wellness scores for ML integration."""
+    start_date = date.today() - timedelta(days=days)
+
+    try:
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT
+                    AVG(sleep_quality) as avg_sleep,
+                    AVG(energy_level) as avg_energy,
+                    AVG(mood) as avg_mood,
+                    AVG(stress_level) as avg_stress,
+                    AVG(motivation) as avg_motivation,
+                    AVG(focus_ability) as avg_focus,
+                    AVG(overall_wellness) as avg_overall,
+                    COUNT(*) as checkin_count
+                FROM wellness_checkins
+                WHERE date >= %s
+            """, (start_date,))
+            result = cur.fetchone()
+
+        if result:
+            return {
+                'avg_sleep': float(result['avg_sleep']) if result['avg_sleep'] else None,
+                'avg_energy': float(result['avg_energy']) if result['avg_energy'] else None,
+                'avg_mood': float(result['avg_mood']) if result['avg_mood'] else None,
+                'avg_stress': float(result['avg_stress']) if result['avg_stress'] else None,
+                'avg_motivation': float(result['avg_motivation']) if result['avg_motivation'] else None,
+                'avg_focus': float(result['avg_focus']) if result['avg_focus'] else None,
+                'avg_overall': float(result['avg_overall']) if result['avg_overall'] else None,
+                'checkin_count': result['checkin_count'],
+                'days': days
+            }
+        return None
+    except Exception as e:
+        logger.error(f"Error calculating wellness average: {e}")
+        return None

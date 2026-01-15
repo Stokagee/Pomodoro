@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 from collections import Counter, defaultdict
 from statistics import mean, stdev, median
+from utils.logger import logger
 
 
 class PatternAnomalyDetector:
@@ -693,7 +694,7 @@ class PatternAnomalyDetector:
                     anomalies.append(result)
             except Exception as e:
                 # Log but don't fail
-                print(f"Detection error in {detector.__name__}: {e}")
+                logger.warning("ANOMALY_DETECTOR_ERROR", message=f"Detection error in {detector.__name__}", error={"type": type(e).__name__, "message": str(e)}, context={"detector": detector.__name__})
 
         # Calculate confidence based on data quality
         confidence = min(0.9, 0.3 + (unique_days / 30) * 0.4 + (len(self.sessions) / 100) * 0.2)

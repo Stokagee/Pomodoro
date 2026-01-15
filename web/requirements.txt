@@ -9,3 +9,5 @@ requests>=2.31.0
 eventlet>=0.35.0
 prometheus-client>=0.20.0
 prometheus-flask-exporter>=0.23.0
+apscheduler>=3.10.0
+sqlalchemy>=2.0.0

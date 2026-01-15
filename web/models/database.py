@@ -572,6 +572,317 @@ def update_daily_focus_stats(target_date):
 
 
 # =============================================================================
+# END DAY / DAILY RECAP FUNCTIONS
+# =============================================================================
+
+def get_completed_categories(target_date=None):
+    """Get list of categories from completed sessions for a date.
+
+    Returns: [{'category': 'Coding', 'sessions': 3, 'minutes': 156}, ...]
+    """
+    if target_date is None:
+        target_date = date.today()
+    elif isinstance(target_date, str):
+        target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
+
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT category,
+                   COUNT(*) as sessions,
+                   COALESCE(SUM(duration_minutes), 0) as minutes
+            FROM sessions
+            WHERE date = %s AND completed = TRUE
+            GROUP BY category
+            ORDER BY sessions DESC
+        """, (target_date,))
+        results = cur.fetchall()
+
+    return [dict(r) for r in results] if results else []
+
+
+def complete_day(target_date, end_mood, end_notes=''):
+    """Complete a day with end-of-day recap and auto-finalize categories.
+
+    This function:
+    1. Gets today's completed sessions and their categories
+    2. Merges with existing daily_focus themes (doesn't overwrite morning plan)
+    3. Adds categories that were actually worked on
+    4. Saves end_mood, end_notes, marks day_completed=TRUE
+
+    Returns: dict with updated daily_focus data
+    """
+    if isinstance(target_date, str):
+        target_date = datetime.strptime(target_date, '%Y-%m-%d').date()
+    elif target_date is None:
+        target_date = date.today()
+
+    now = datetime.now()
+
+    # Get completed categories for the day
+    completed_cats = get_completed_categories(target_date)
+
+    with get_cursor() as cur:
+        # Get existing daily_focus
+        cur.execute("""
+            SELECT id, themes, notes, planned_sessions, actual_sessions,
+                   productivity_score, end_mood, end_notes, day_completed
+            FROM daily_focus
+            WHERE date = %s
+        """, (target_date,))
+        existing = cur.fetchone()
+
+        # Prepare themes array
+        existing_themes = existing['themes'] if existing and existing.get('themes') else []
+        if isinstance(existing_themes, str):
+            import json
+            existing_themes = json.loads(existing_themes)
+
+        # Create a map of existing theme names to their planned sessions
+        existing_theme_map = {
+            t.get('theme', ''): t
+            for t in existing_themes
+            if t.get('theme')
+        }
+
+        # Merge: keep morning planned sessions, add actual session categories
+        merged_themes = []
+        seen_categories = set()
+
+        # First, add existing morning themes (with their planned sessions)
+        for theme_obj in existing_themes:
+            if theme_obj.get('theme'):
+                theme_name = theme_obj['theme']
+                seen_categories.add(theme_name)
+
+                # Check if this category was actually worked on today
+                actual_data = next((c for c in completed_cats if c['category'] == theme_name), None)
+
+                merged_theme = {
+                    'theme': theme_name,
+                    'planned_sessions': theme_obj.get('planned_sessions', 1),
+                    'actual_sessions': actual_data['sessions'] if actual_data else 0,
+                    'notes': theme_obj.get('notes', '')
+                }
+                merged_themes.append(merged_theme)
+
+        # Then, add categories that were worked on but weren't in morning plan
+        for cat in completed_cats:
+            if cat['category'] not in seen_categories:
+                merged_themes.append({
+                    'theme': cat['category'],
+                    'planned_sessions': 0,  # Wasn't planned
+                    'actual_sessions': cat['sessions'],
+                    'notes': ''
+                })
+                seen_categories.add(cat['category'])
+
+        # Get actual sessions count and productivity score
+        cur.execute("""
+            SELECT COUNT(*) as count
+            FROM sessions
+            WHERE date = %s AND completed = TRUE
+        """, (target_date,))
+        actual_sessions = cur.fetchone()['count']
+
+        cur.execute("""
+            SELECT AVG(productivity_rating) as avg_rating
+            FROM sessions
+            WHERE date = %s AND completed = TRUE AND productivity_rating IS NOT NULL
+        """, (target_date,))
+        result = cur.fetchone()
+        productivity_score = normalize_rating(result['avg_rating']) if result['avg_rating'] else 0
+
+        # Import json for JSON serialization
+        import json
+
+        # UPSERT into daily_focus
+        cur.execute("""
+            INSERT INTO daily_focus
+            (date, themes, notes, planned_sessions, actual_sessions, productivity_score,
+             end_mood, end_notes, day_completed, completed_at, created_at, updated_at)
+            VALUES (%s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (date) DO UPDATE SET
+                themes = EXCLUDED.themes,
+                actual_sessions = EXCLUDED.actual_sessions,
+                productivity_score = EXCLUDED.productivity_score,
+                end_mood = EXCLUDED.end_mood,
+                end_notes = EXCLUDED.end_notes,
+                day_completed = EXCLUDED.day_completed,
+                completed_at = EXCLUDED.completed_at,
+                updated_at = EXCLUDED.updated_at
+            RETURNING id, date, themes, notes, planned_sessions, actual_sessions,
+                      productivity_score, end_mood, end_notes, day_completed, completed_at
+        """, (
+            target_date,
+            json.dumps(merged_themes) if merged_themes else '[]',
+            existing['notes'] if existing and existing.get('notes') else '',
+            sum(t.get('planned_sessions', 0) for t in merged_themes),
+            actual_sessions,
+            round(productivity_score, 1),
+            round(float(end_mood), 2) if end_mood is not None else None,
+            str(end_notes)[:500] if end_notes else '',
+            True,
+            now,
+            now if not existing else existing['created_at'],
+            now
+        ))
+
+        result = cur.fetchone()
+
+    return dict(result) if result else None
+
+
+# =============================================================================
+# SYSTEM STATE FUNCTIONS
+# =============================================================================
+
+def get_system_state(key: str) -> Optional[Dict[str, Any]]:
+    """Get system state value by key.
+
+    Args:
+        key: State key (e.g., 'auto_end_day')
+
+    Returns:
+        dict with 'value' and 'updated_at', or None if not found
+    """
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT value, updated_at
+            FROM system_state
+            WHERE key = %s
+        """, (key,))
+        result = cur.fetchone()
+
+        if result:
+            state = dict(result)
+            # Parse JSONB if it's a string
+            if isinstance(state['value'], str):
+                state['value'] = json.loads(state['value'])
+            return state
+        return None
+
+
+def set_system_state(key: str, value: Dict[str, Any]) -> bool:
+    """Set system state value (upsert).
+
+    Args:
+        key: State key
+        value: Dictionary value to store
+
+    Returns:
+        True if successful
+    """
+    with get_cursor() as cur:
+        cur.execute("""
+            INSERT INTO system_state (key, value, updated_at)
+            VALUES (%s, %s::jsonb, NOW())
+            ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value,
+                updated_at = NOW()
+            RETURNING key
+        """, (key, json.dumps(value)))
+        return cur.fetchone() is not None
+
+
+def get_auto_end_day_state() -> Dict[str, Any]:
+    """Get auto end-day state.
+
+    Returns:
+        dict with 'enabled', 'last_completed_date', 'last_run_at'
+    """
+    state = get_system_state('auto_end_day')
+    if not state:
+        # Initialize if doesn't exist
+        default_state = {
+            'enabled': True,
+            'last_completed_date': None,
+            'last_run_at': None
+        }
+        set_system_state('auto_end_day', default_state)
+        return default_state
+    return state['value']
+
+
+def update_auto_end_day_state(**kwargs) -> bool:
+    """Update auto end-day state fields.
+
+    Args:
+        **kwargs: Fields to update (e.g., last_completed_date='2025-01-13')
+
+    Returns:
+        True if successful
+    """
+    current_state = get_auto_end_day_state()
+    current_state.update(kwargs)
+    return set_system_state('auto_end_day', current_state)
+
+
+def check_and_complete_previous_day(target_date: date) -> Optional[Dict[str, Any]]:
+    """Check if previous day needs to be completed and do it.
+
+    This function checks if the target date is already completed,
+    and if not, automatically completes it with calculated stats.
+
+    Args:
+        target_date: The date to check/complete (typically yesterday)
+
+    Returns:
+        dict with completion result and 'auto_completed': True flag,
+        or None if already completed
+    """
+    # Check if already completed
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT day_completed, completed_at
+            FROM daily_focus
+            WHERE date = %s
+        """, (target_date,))
+        result = cur.fetchone()
+
+        if result and result['day_completed']:
+            logger.info(f"Day {target_date} already completed at {result['completed_at']}")
+            return None
+
+    # Not completed, auto-complete it
+    logger.info(f"Auto-completing previous day: {target_date}")
+
+    # Calculate end_mood from sessions (or use neutral 50 if no sessions)
+    with get_cursor() as cur:
+        cur.execute("""
+            SELECT AVG(productivity_rating) as avg_rating
+            FROM sessions
+            WHERE date = %s AND completed = TRUE AND productivity_rating IS NOT NULL
+        """, (target_date,))
+        rating_result = cur.fetchone()
+        end_mood = normalize_rating(rating_result['avg_rating']) if rating_result and rating_result['avg_rating'] else 50.0
+
+    end_notes = "Auto-completed by system"
+
+    # Complete the day
+    result = complete_day(target_date, end_mood, end_notes)
+
+    if result:
+        # Mark as auto-completed
+        with get_cursor() as cur:
+            cur.execute("""
+                UPDATE daily_focus
+                SET completed_at = NOW()
+                WHERE date = %s
+            """, (target_date,))
+
+        # Update state
+        update_auto_end_day_state(
+            last_completed_date=str(target_date),
+            last_run_at=datetime.now().isoformat()
+        )
+
+        logger.info(f"Successfully auto-completed day {target_date}")
+        return {**result, 'auto_completed': True}
+
+    return None
+
+
+# =============================================================================
 # WELLNESS CHECKIN FUNCTIONS
 # =============================================================================
 
@@ -756,9 +1067,9 @@ def get_calendar_month(year, month):
         last_day = date(year, month + 1, 1) - timedelta(days=1)
 
     with get_cursor() as cur:
-        # Get daily focus data
+        # Get daily focus data (including end_mood, day_completed)
         cur.execute("""
-            SELECT date, themes, notes, planned_sessions
+            SELECT date, themes, notes, planned_sessions, end_mood, day_completed
             FROM daily_focus
             WHERE date >= %s AND date <= %s
         """, (first_day, last_day))
@@ -807,7 +1118,9 @@ def get_calendar_month(year, month):
             'planned_sessions': total_planned,
             'actual_sessions': session_info.get('sessions', 0),
             'total_minutes': session_info.get('total_minutes', 0) or 0,
-            'productivity_score': round(avg_rating, 1)
+            'productivity_score': round(avg_rating, 1),
+            'end_mood': focus.get('end_mood'),
+            'day_completed': focus.get('day_completed', False)
         }
         current += timedelta(days=1)
 
@@ -825,9 +1138,9 @@ def get_calendar_week(week_start_date):
     week_end = week_start + timedelta(days=6)
 
     with get_cursor() as cur:
-        # Get daily focus data
+        # Get daily focus data (including end_mood, day_completed)
         cur.execute("""
-            SELECT date, themes, notes, planned_sessions
+            SELECT date, themes, notes, planned_sessions, end_mood, day_completed
             FROM daily_focus
             WHERE date >= %s AND date <= %s
         """, (week_start, week_end))
@@ -884,7 +1197,9 @@ def get_calendar_week(week_start_date):
             'actual_sessions': session_info.get('sessions', 0),
             'total_minutes': session_info.get('total_minutes', 0) or 0,
             'productivity_score': round(avg_rating, 1),
-            'categories': session_info.get('categories', []) or []
+            'categories': session_info.get('categories', []) or [],
+            'end_mood': focus.get('end_mood'),
+            'day_completed': focus.get('day_completed', False)
         }
         current += timedelta(days=1)
 
@@ -1167,6 +1482,93 @@ def get_latest_weekly_review():
             review['created_at'] = review['created_at'].isoformat()
 
     return review
+
+
+def check_pending_weekly_reviews():
+    """Check if there are any weeks that need a review.
+
+    Returns:
+        dict: {
+            'has_pending': bool,
+            'pending_weeks': [
+                {
+                    'week_start': 'YYYY-MM-DD',
+                    'week_end': 'YYYY-MM-DD',
+                    'week_number': int,
+                    'is_current_week': bool
+                }
+            ],
+            'last_review_week': 'YYYY-MM-DD' or None
+        }
+    """
+    from datetime import date, timedelta
+
+    today = date.today()
+    current_week_start = today - timedelta(days=today.weekday())
+
+    # Get latest review
+    latest_review = get_latest_weekly_review()
+
+    pending_weeks = []
+
+    if not latest_review:
+        # No reviews ever - don't force review for new users
+        # Only trigger if there's actual session data
+        with get_cursor() as cur:
+            cur.execute("SELECT COUNT(*) as count FROM sessions WHERE completed = TRUE")
+            session_count = cur.fetchone()['count']
+
+        if session_count < 5:  # At least 5 sessions before requiring review
+            return {'has_pending': False, 'pending_weeks': [], 'last_review_week': None}
+
+        # Check if there are sessions from a completed week
+        with get_cursor() as cur:
+            cur.execute("""
+                SELECT MIN(date) as first_date
+                FROM sessions
+                WHERE completed = TRUE
+            """)
+            first_session = cur.fetchone()
+
+        if first_session and first_session['first_date']:
+            first_date = first_session['first_date']
+            if isinstance(first_date, str):
+                first_date = datetime.strptime(first_date, '%Y-%m-%d').date()
+
+            # If first session was before current week, there's a pending review
+            if first_date < current_week_start:
+                # Find the earliest week with sessions
+                week_to_review = current_week_start - timedelta(days=7)
+                pending_weeks.append({
+                    'week_start': week_to_review.isoformat(),
+                    'week_end': (week_to_review + timedelta(days=6)).isoformat(),
+                    'week_number': week_to_review.isocalendar()[1],
+                    'is_current_week': False
+                })
+
+    else:
+        # Has previous reviews - check if any week is missing
+        last_review_week = latest_review.get('week_start')
+        if isinstance(last_review_week, str):
+            last_review_week = datetime.strptime(last_review_week, '%Y-%m-%d').date()
+
+        # Check if at least one full week has passed since last review
+        week_after_last_review = last_review_week + timedelta(days=7)
+
+        if week_after_last_review < current_week_start:
+            # There's at least one week between last review and current week
+            pending_weeks.append({
+                'week_start': week_after_last_review.isoformat(),
+                'week_end': (week_after_last_review + timedelta(days=6)).isoformat(),
+                'week_number': week_after_last_review.isocalendar()[1],
+                'is_current_week': False
+            })
+
+    return {
+        'has_pending': len(pending_weeks) > 0,
+        'pending_weeks': pending_weeks[:1],  # Only return the most recent pending week
+        'last_review_week': latest_review.get('week_start') if latest_review else None
+    }
 
 
 # =============================================================================

@@ -347,6 +347,29 @@
 .productivity-dot.medium { background: var(--warning); }
 .productivity-dot.low { background: var(--error); }
 
+/* End of Day Mood Indicator */
+.day-end-mood {
+    position: absolute;
+    bottom: 0.5rem;
+    right: 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    background: rgba(0, 0, 0, 0.6);
+    padding: 0.15rem 0.4rem;
+    border-radius: 12px;
+    font-size: 0.7rem;
+}
+
+.day-end-mood .mood-emoji {
+    font-size: 0.75rem;
+}
+
+.day-end-mood .mood-value {
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
 /* Week View */
 .week-grid {
     display: grid;
@@ -1479,4 +1502,24 @@
 
 .ml-insights-section .insight-text strong {
     color: var(--text-primary);
+}
+
+/* Required modal - cannot be dismissed */
+.modal-overlay.modal-required .modal-close {
+    display: none;
+}
+
+.modal-overlay.modal-required .modal-footer .btn-secondary {
+    display: none;
+}
+
+.modal-overlay.modal-required .modal-header {
+    border-left: 4px solid #ef4444;
+}
+
+.modal-overlay.modal-required .modal-header h3::after {
+    content: " • Vyžadováno";
+    color: #ef4444;
+    font-weight: normal;
+    font-size: 0.9em;
 }

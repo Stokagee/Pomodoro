@@ -11,6 +11,13 @@
         <span class="start-day-hint">Naplánuj si den</span>
     </button>
 
+    <!-- End Day Button -->
+    <button class="end-day-btn" id="end-day-btn" onclick="openEndDayModal()">
+        <span class="end-day-icon">🌆</span>
+        <span class="end-day-text">End Day</span>
+        <span class="end-day-hint">Ukonči den</span>
+    </button>
+
     <!-- ML Recommendation Widget -->
     {% if recommendation %}
     <div class="ml-widget recommendation-widget">
@@ -255,6 +262,13 @@
                     <span class="topic-name" id="ai-topic"></span>
                 </div>
                 <p class="topic-reason" id="ai-reason"></p>
+
+                <!-- AI Reasoning Section (Why this suggestion?) -->
+                <div class="ai-reasoning hidden" id="ai-reasoning-section">
+                    <span class="ai-reasoning-icon">🤖</span>
+                    <span class="ai-reasoning-text" id="ai-reasoning-text"></span>
+                </div>
+
                 <div class="ai-confidence">
                     <span class="confidence-label">Jistota:</span>
                     <div class="confidence-bar">
@@ -669,7 +683,7 @@
             </div>
             <div class="modal-footer">
                 <button class="modal-btn secondary" onclick="closeStartDayModal()">Zrušit</button>
-                <button class="modal-btn primary" onclick="goToStartDayStep(2)">Pokračovat</button>
+                <button class="modal-btn primary" onclick="tryGoToStep2()">Pokračovat</button>
             </div>
         </div>
 
@@ -781,6 +795,45 @@
                     ✓ Začít den
                 </button>
             </div>
+        </div>
+    </div>
+</div>
+
+<!-- End Day Modal -->
+<div class="modal-overlay" id="end-day-modal" style="display: none;">
+    <div class="modal end-day-modal">
+        <div class="modal-header">
+            <h2>🌆 Ukončení dne</h2>
+            <p>Jak se cítíš na konci dne?</p>
+        </div>
+        <div class="modal-body">
+            <!-- Mood Slider -->
+            <div class="end-day-mood-section">
+                <label>😊 Jak se cítíš?</label>
+                <div class="mood-slider-container">
+                    <input type="range" id="end-day-mood" min="0" max="100" value="50" class="mood-slider">
+                    <div class="mood-value"><span id="end-day-mood-value">50</span>%</div>
+                </div>
+                <div class="mood-labels">
+                    <span>😞</span>
+                    <span>😐</span>
+                    <span>😊</span>
+                </div>
+            </div>
+            <!-- Notes -->
+            <div class="end-day-notes-section">
+                <label>📝 Poznámky k dni</label>
+                <textarea id="end-day-notes" rows="3" maxlength="500" placeholder="Co se podařilo? Co plánuješ na zítřek?"></textarea>
+                <div class="char-count"><span id="end-day-notes-count">0</span>/500</div>
+            </div>
+            <!-- Summary of today's work -->
+            <div class="end-day-summary" id="end-day-summary">
+                <p>Dnes: <strong id="end-day-sessions-count">0</strong> sessions • <span id="end-day-categories">-</span></p>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="modal-btn secondary" onclick="closeEndDayModal()">Zrušit</button>
+            <button class="modal-btn primary" onclick="submitEndDay()">Ukončit den</button>
         </div>
     </div>
 </div>

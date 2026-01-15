@@ -11,6 +11,7 @@ services:
       - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
       - ML_SERVICE_URL=http://ml-service:5002
       - FLASK_ENV=development
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     volumes:
       - ./web:/app
       - ./logs:/app/logs
@@ -31,6 +32,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://pomodoro:pomodoro_secret@postgres:5432/pomodoro
       - FLASK_ENV=development
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
       # AI Provider: 'ollama' (local) nebo 'cloud' (OpenAI/DeepSeek)
       - AI_PROVIDER=cloud
       # Ollama settings (local AI - fallback)

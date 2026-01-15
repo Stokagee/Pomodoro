@@ -33,6 +33,7 @@ from models.database import (
     get_history, get_all_sessions, get_streak_stats, clear_all_sessions,
     # Calendar & Daily Focus
     get_daily_focus, set_daily_focus, update_daily_focus_stats,
+    get_completed_categories, complete_day,
     get_calendar_month, get_calendar_week,
     # Weekly Planning
     get_weekly_plan, save_weekly_plan,
@@ -62,9 +63,75 @@ from models.database import (
     save_wellness_checkin, get_wellness_checkin, get_wellness_history, get_wellness_average
 )
 
+# Scheduler import
+import atexit
+
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'pomodoro-secret-key-2025')
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+
+# =============================================================================
+# REQUEST LOGGING MIDDLEWARE
+# =============================================================================
+@app.before_request
+def log_incoming_request():
+    """Log incoming requests for observability."""
+    # Skip static files and health endpoint for noise reduction
+    if request.path.startswith('/static') or request.path == '/health':
+        return
+
+    request.start_time = time.time()
+    logger.debug("request_received",
+                 message="Incoming request",
+                 context={
+                     "method": request.method,
+                     "path": request.path,
+                     "query_args": dict(request.args),
+                     "remote_addr": request.remote_addr
+                 })
+
+@app.after_request
+def log_request_response(response):
+    """Log completed requests with timing information."""
+    # Skip static files and health endpoint
+    if request.path.startswith('/static') or request.path == '/health':
+        return response
+
+    # Calculate duration if start_time was set
+    duration_ms = None
+    if hasattr(request, 'start_time'):
+        duration_ms = round((time.time() - request.start_time) * 1000, 2)
+
+    # Determine log level based on status code
+    if response.status_code >= 500:
+        logger.error("request_completed",
+                    message=f"Request completed with server error",
+                    context={
+                        "method": request.method,
+                        "path": request.path,
+                        "status": response.status_code
+                    },
+                    metrics={"duration_ms": duration_ms} if duration_ms else None)
+    elif response.status_code >= 400:
+        logger.warning("request_completed",
+                      message=f"Request completed with client error",
+                      context={
+                          "method": request.method,
+                          "path": request.path,
+                          "status": response.status_code
+                      },
+                      metrics={"duration_ms": duration_ms} if duration_ms else None)
+    else:
+        logger.info("request_completed",
+                    message="Request completed successfully",
+                    context={
+                        "method": request.method,
+                        "path": request.path,
+                        "status": response.status_code
+                    },
+                    metrics={"duration_ms": duration_ms} if duration_ms else None)
+
+    return response
 
 # =============================================================================
 # PROMETHEUS METRICS
@@ -159,13 +226,14 @@ def get_ml_recommendation():
     """Get recommendation from ML service"""
     start_time = time.time()
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/recommendation', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/recommendation', headers=headers, timeout=2)
         ML_REQUEST_DURATION.labels(endpoint='recommendation').observe(time.time() - start_time)
         if response.ok:
             return response.json()
     except Exception as e:
         ML_REQUEST_ERRORS.labels(endpoint='recommendation').inc()
-        print(f"ML service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "recommendation"})
     return None
 
 
@@ -173,39 +241,43 @@ def get_ml_prediction():
     """Get prediction from ML service"""
     start_time = time.time()
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/prediction/today', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/prediction/today', headers=headers, timeout=2)
         ML_REQUEST_DURATION.labels(endpoint='prediction').observe(time.time() - start_time)
         if response.ok:
             return response.json()
     except Exception as e:
         ML_REQUEST_ERRORS.labels(endpoint='prediction').inc()
-        print(f"ML service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "prediction"})
     return None
 
 
 def get_ml_burnout_risk():
     """Get burnout risk assessment from ML service"""
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/burnout-risk', timeout=5)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/burnout-risk', headers=headers, timeout=5)
         if response.ok:
             return response.json()
     except Exception as e:
-        print(f"ML burnout service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML burnout service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "burnout-risk"})
     return None
 
 
 def get_ml_optimal_schedule(sessions=6, day='today'):
     """Get optimal schedule from Focus Optimizer ML service"""
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/optimal-schedule',
             params={'sessions': sessions, 'day': day},
+            headers=headers,
             timeout=5
         )
         if response.ok:
             return response.json()
     except Exception as e:
-        print(f"ML optimal schedule service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML optimal schedule service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "optimal-schedule"})
     return None
 
 
@@ -249,10 +321,11 @@ def get_ml_quality_prediction(preset='deep_work', category=None):
                 'overall_wellness': wellness_checkin.get('overall_wellness')
             }
     except Exception as e:
-        print(f"Could not fetch wellness data: {e}")
+        logger.warning("wellness_data_error", message="Could not fetch wellness data", error={"type": "WellnessFetchError", "message": str(e)})
 
     try:
         now = datetime.now()
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.post(
             f'{ML_SERVICE_URL}/api/predict-quality',
             json={
@@ -264,12 +337,13 @@ def get_ml_quality_prediction(preset='deep_work', category=None):
                 'minutes_since_last': minutes_since_last,
                 'wellness': wellness_data
             },
+            headers=headers,
             timeout=5
         )
         if response.ok:
             return response.json()
     except Exception as e:
-        print(f"ML quality prediction service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML quality prediction service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "predict-quality"})
     return None
 
 
@@ -325,7 +399,8 @@ def insights():
     # Get ML analysis
     analysis = None
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/analysis', timeout=5)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/analysis', headers=headers, timeout=5)
         if response.ok:
             analysis = response.json()
     except Exception:
@@ -554,7 +629,8 @@ def api_log_session():
     # Invalidate AI caches (new session = new data)
     try:
         import requests
-        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', headers=headers, timeout=2)
     except Exception:
         pass  # Non-blocking, don't fail session log if cache invalidation fails
 
@@ -707,8 +783,10 @@ def api_burnout_risk():
 def weekly_insights_proxy(week_start):
     """Proxy pro ML weekly insights pro kalendář"""
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f"{ML_SERVICE_URL}/api/weekly-insights/{week_start}",
+            headers=headers,
             timeout=5
         )
         if response.ok:
@@ -720,7 +798,7 @@ def weekly_insights_proxy(week_start):
             'productivity_trend': None
         }), response.status_code
     except Exception as e:
-        print(f"ML weekly insights service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML weekly insights service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "weekly-insights"})
         return jsonify({
             'predicted_sessions': None,
             'recommended_focus': None,
@@ -742,11 +820,12 @@ def api_anomalies():
     - quality_decline: Drop in session ratings
     """
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/detect-anomalies', timeout=5)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/detect-anomalies', headers=headers, timeout=5)
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"ML anomaly detection service unavailable: {e}")
+        logger.warning("ml_service_error", message="ML anomaly detection service unavailable", error={"type": "MLUnavailable", "message": str(e)}, context={"endpoint": "detect-anomalies"})
 
     return jsonify({
         'error': 'ML service unavailable',
@@ -999,6 +1078,131 @@ def api_update_focus(date_str):
 
 
 # =============================================================================
+# END DAY / DAILY RECAP API ENDPOINTS
+# =============================================================================
+
+@app.route('/api/day/complete', methods=['POST'])
+def api_complete_day():
+    """Complete a day with end-of-day recap.
+
+    Request body:
+        - date: Optional date string (YYYY-MM-DD), defaults to today
+        - end_mood: 0-100 mood rating
+        - end_notes: Optional text notes
+
+    Returns:
+        - success: Boolean
+        - focus: Updated daily_focus data with merged themes
+        - summary: Summary of completed sessions
+    """
+    from datetime import date
+
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    # Get target date (default to today)
+    date_str = data.get('date')
+    if date_str:
+        try:
+            target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+        except ValueError:
+            return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+    else:
+        target_date = date.today()
+
+    # Validate end_mood
+    end_mood = data.get('end_mood')
+    if end_mood is not None:
+        try:
+            end_mood = float(end_mood)
+            end_mood = max(0, min(100, end_mood))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Invalid end_mood value'}), 400
+
+    end_notes = data.get('end_notes', '')
+
+    # Complete the day
+    result = complete_day(target_date, end_mood, end_notes)
+
+    if result:
+        # Get completed categories for summary
+        completed_cats = get_completed_categories(target_date)
+        categories_str = ', '.join([f"{c['category']} ({c['sessions']})" for c in completed_cats])
+
+        return jsonify({
+            'success': True,
+            'focus': result,
+            'summary': {
+                'sessions': result.get('actual_sessions', 0),
+                'categories': categories_str,
+                'productivity': result.get('productivity_score', 0),
+                'mood': end_mood
+            }
+        })
+    else:
+        return jsonify({'error': 'Failed to complete day'}), 500
+
+
+@app.route('/api/day/recap/<date_str>')
+def api_day_recap(date_str):
+    """Get end-of-day recap for a specific date.
+
+    Returns daily_focus data including end_mood, end_notes, day_completed
+    """
+    try:
+        target_date = datetime.strptime(date_str, '%Y-%m-%d').date()
+    except ValueError:
+        return jsonify({'error': 'Invalid date format. Use YYYY-MM-DD'}), 400
+
+    focus = get_daily_focus(target_date)
+
+    if focus:
+        # Get completed categories for this date
+        completed_cats = get_completed_categories(target_date)
+
+        return jsonify({
+            'success': True,
+            'recap': {
+                'date': date_str,
+                'end_mood': focus.get('end_mood'),
+                'end_notes': focus.get('end_notes'),
+                'day_completed': focus.get('day_completed', False),
+                'completed_at': focus.get('completed_at'),
+                'themes': focus.get('themes', []),
+                'actual_sessions': focus.get('actual_sessions', 0),
+                'productivity_score': focus.get('productivity_score', 0),
+                'completed_categories': completed_cats
+            }
+        })
+    else:
+        return jsonify({
+            'success': False,
+            'recap': None,
+            'message': 'No data found for this date'
+        })
+
+
+@app.route('/api/day/categories/today')
+def api_today_categories():
+    """Get completed categories for today.
+
+    Useful for showing what's been worked on before completing the day.
+    """
+    from datetime import date
+
+    completed_cats = get_completed_categories(date.today())
+
+    return jsonify({
+        'success': True,
+        'date': date.today().isoformat(),
+        'categories': completed_cats,
+        'total_sessions': sum(c['sessions'] for c in completed_cats),
+        'total_minutes': sum(c['minutes'] for c in completed_cats)
+    })
+
+
+# =============================================================================
 # WELLNESS CHECK-IN API ENDPOINTS
 # =============================================================================
 
@@ -1167,6 +1371,29 @@ def api_wellness_analytics():
 
 
 # =============================================================================
+# SCHEDULER STATUS ENDPOINT
+# =============================================================================
+
+@app.route('/api/scheduler/status')
+def api_scheduler_status():
+    """Get scheduler status for health checks and monitoring."""
+    try:
+        from utils.scheduler import is_scheduler_running, get_scheduled_jobs
+        running = is_scheduler_running()
+        jobs = get_scheduled_jobs()
+
+        return jsonify({
+            'running': running,
+            'jobs': jobs
+        })
+    except Exception as e:
+        return jsonify({
+            'running': False,
+            'error': str(e)
+        }), 503
+
+
+# =============================================================================
 # WEEKLY PLANNING API ENDPOINTS
 # =============================================================================
 
@@ -1309,7 +1536,8 @@ def api_save_weekly_review():
     # Get ML insights if available
     ml_insights = {}
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/prediction/week', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/prediction/week', headers=headers, timeout=2)
         if response.ok:
             ml_insights = response.json()
     except Exception:
@@ -1333,6 +1561,13 @@ def api_latest_review():
     if review:
         return jsonify(review)
     return jsonify({'error': 'No reviews found'}), 404
+
+
+@app.route('/api/review/pending')
+def api_pending_review():
+    """Check if there's a pending weekly review that needs to be completed."""
+    pending = check_pending_weekly_reviews()
+    return jsonify(pending)
 
 
 # =============================================================================
@@ -1631,18 +1866,20 @@ def api_ai_daily_challenge():
         today_stats = get_today_stats()
         profile = get_user_profile()
 
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/daily-challenge',
             params={
                 'sessions_today': today_stats.get('sessions_count', 0),
                 'level': profile.get('level', 1)
             },
+            headers=headers,
             timeout=10
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI daily challenge service unavailable: {e}")
+        logger.warning("ai_service_error", message="AI daily challenge service unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "daily-challenge"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1657,18 +1894,20 @@ def api_ai_weekly_quest():
         profile = get_user_profile()
         weekly_stats = get_weekly_stats()
 
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/weekly-quest',
             params={
                 'level': profile.get('level', 1),
                 'weekly_sessions': weekly_stats.get('sessions_count', 0)
             },
+            headers=headers,
             timeout=10
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI weekly quest service unavailable: {e}")
+        logger.warning("ai_service_error", message="AI weekly quest service unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "weekly-quest"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1683,18 +1922,20 @@ def api_ai_motivation():
         today_stats = get_today_stats()
         streak = get_streak_stats()
 
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/motivation',
             params={
                 'sessions_today': today_stats.get('sessions_count', 0),
                 'streak': streak.get('current_streak', 0)
             },
+            headers=headers,
             timeout=10
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI motivation service unavailable: {e}")
+        logger.warning("ai_service_error", message="AI motivation service unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "motivation"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1707,11 +1948,12 @@ def api_ai_motivation():
 def api_ai_health():
     """Check AI/Ollama service health"""
     try:
-        response = requests.get(f'{ML_SERVICE_URL}/api/ai/health', timeout=5)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        response = requests.get(f'{ML_SERVICE_URL}/api/ai/health', headers=headers, timeout=5)
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI health check failed: {e}")
+        logger.warning("ai_service_error", message="AI health check failed", error={"type": "AIHealthCheckError", "message": str(e)}, context={"endpoint": "health"})
 
     return jsonify({
         'status': 'unavailable',
@@ -1733,14 +1975,16 @@ def api_ai_morning_briefing():
     Cache: 4 hours (invalidated on new session)
     """
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/morning-briefing',
+            headers=headers,
             timeout=60  # Long timeout for full LLM analysis
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI morning briefing unavailable: {e}")
+        logger.warning("ai_service_error", message="AI morning briefing unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "morning-briefing"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1759,14 +2003,16 @@ def api_ai_evening_review():
     Cache: Until next day (invalidated on new session)
     """
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/evening-review',
+            headers=headers,
             timeout=45
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI evening review unavailable: {e}")
+        logger.warning("ai_service_error", message="AI evening review unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "evening-review"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1785,14 +2031,16 @@ def api_ai_integrated_insight():
     Cache: 2 hours (invalidated on new session)
     """
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/integrated-insight',
+            headers=headers,
             timeout=90  # Longest timeout - combines multiple analyses
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI integrated insight unavailable: {e}")
+        logger.warning("ai_service_error", message="AI integrated insight unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "integrated-insight"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1811,14 +2059,16 @@ def api_ai_analyze_burnout():
     Cache: 6 hours (invalidated on new session)
     """
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/analyze-burnout',
+            headers=headers,
             timeout=45
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI burnout analysis unavailable: {e}")
+        logger.warning("ai_service_error", message="AI burnout analysis unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "analyze-burnout"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1837,14 +2087,16 @@ def api_ai_analyze_anomalies():
     Cache: 6 hours (invalidated on new session)
     """
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/analyze-anomalies',
+            headers=headers,
             timeout=45
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI anomaly analysis unavailable: {e}")
+        logger.warning("ai_service_error", message="AI anomaly analysis unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "analyze-anomalies"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1873,15 +2125,17 @@ def api_ai_analyze_quality():
         category = request.args.get('category')
 
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.post(
             f'{ML_SERVICE_URL}/api/ai/analyze-quality',
             json={'preset': preset, 'category': category},
+            headers=headers,
             timeout=45
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI quality analysis unavailable: {e}")
+        logger.warning("ai_service_error", message="AI quality analysis unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "analyze-quality"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1904,15 +2158,17 @@ def api_ai_optimal_schedule_ai():
     day = request.args.get('day', 'today')
 
     try:
+        headers = {'X-Request-ID': logger.get_trace_id()}
         response = requests.get(
             f'{ML_SERVICE_URL}/api/ai/optimal-schedule-ai',
             params={'sessions': sessions, 'day': day},
+            headers=headers,
             timeout=45
         )
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI optimal schedule unavailable: {e}")
+        logger.warning("ai_service_error", message="AI optimal schedule unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "optimal-schedule"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1937,7 +2193,7 @@ def api_ai_learning_v2():
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI learning v2 unavailable: {e}")
+        logger.warning("ai_service_error", message="AI learning v2 unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "learning-v2"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -1957,7 +2213,7 @@ def api_ai_cache_status():
         if response.ok:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI cache status unavailable: {e}")
+        logger.warning("ai_service_error", message="AI cache status unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "cache-status"})
 
     return jsonify({
         'error': 'AI service unavailable',
@@ -2017,9 +2273,9 @@ def api_ai_learning_recommendations():
                 'from_cache': False
             })
         else:
-            print(f"AI learning recommendations failed: {response.status_code}")
+            logger.warning("ai_service_error", message="AI learning recommendations failed", error={"type": "AIRequestFailed", "message": f"HTTP {response.status_code}"}, context={"endpoint": "learning-recommendations"})
     except Exception as e:
-        print(f"AI learning recommendations error: {e}")
+        logger.warning("ai_service_error", message="AI learning recommendations error", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "learning-recommendations"})
 
     # Return fallback recommendations
     return jsonify(_get_fallback_learning_recommendations())
@@ -2090,7 +2346,7 @@ def api_ai_next_session():
                 'from_cache': False
             })
     except Exception as e:
-        print(f"AI next session suggestion error: {e}")
+        logger.warning("ai_service_error", message="AI next session suggestion error", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "next-session-suggestion"})
 
     # Fallback suggestion
     return jsonify(_get_fallback_session_suggestion())
@@ -2142,9 +2398,9 @@ def api_ai_expand_suggestion():
         if response.status_code == 200:
             return jsonify(response.json())
         else:
-            print(f"AI expand suggestion failed: {response.status_code}")
+            logger.warning("ai_service_error", message="AI expand suggestion failed", error={"type": "AIRequestFailed", "message": f"HTTP {response.status_code}"}, context={"endpoint": "expand-suggestion"})
     except Exception as e:
-        print(f"AI expand suggestion error: {e}")
+        logger.warning("ai_service_error", message="AI expand suggestion error", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "expand-suggestion"})
 
     # Fallback response
     return jsonify({
@@ -2182,7 +2438,7 @@ def api_ai_extract_topics():
         if response.status_code == 200:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI extract topics error: {e}")
+        logger.warning("ai_service_error", message="AI extract topics error", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "extract-topics"})
 
     # Fallback - basic extraction
     return jsonify({
@@ -2226,7 +2482,7 @@ def api_ai_analyze_patterns():
         if response.status_code == 200:
             return jsonify(response.json())
     except Exception as e:
-        print(f"AI analyze patterns error: {e}")
+        logger.warning("ai_service_error", message="AI analyze patterns error", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "analyze-patterns"})
 
     return jsonify({
         'productivity': {
@@ -2255,7 +2511,8 @@ def api_ai_invalidate_cache():
 
     # Also invalidate ML service in-memory cache
     try:
-        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', headers=headers, timeout=2)
     except Exception:
         pass  # Non-blocking, don't fail if ML service is unavailable
 
@@ -2357,7 +2614,7 @@ def _sync_categories_to_ml_service(categories: list) -> bool:
         )
         return response.ok
     except Exception as e:
-        print(f"Failed to sync categories to ML service: {e}")
+        logger.warning("ml_sync_error", message="Failed to sync categories to ML service", error={"type": "MLSyncError", "message": str(e)})
         return False
 
 
@@ -2392,7 +2649,7 @@ def api_start_day():
         if response.ok:
             morning_briefing = response.json()
     except Exception as e:
-        print(f"Morning briefing unavailable: {e}")
+        logger.warning("ai_service_error", message="Morning briefing unavailable", error={"type": "AIServiceUnavailable", "message": str(e)}, context={"endpoint": "morning-briefing-cache"})
 
     # Get daily challenge
     daily_challenge = get_or_create_daily_challenge()
@@ -2441,69 +2698,98 @@ def api_save_start_day():
     """
     from datetime import date
 
-    data = request.json
-    if not data:
-        return jsonify({'error': 'No data provided'}), 400
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'success': False, 'error': 'No data provided'}), 400
 
-    config = load_config()
-    today = date.today()
+        config = load_config()
+        today = date.today()
 
-    # Process themes
-    themes = data.get('themes', [])
-    valid_themes = []
-    for t in themes:
-        theme_name = t.get('theme')
-        if theme_name and theme_name in config['categories']:
-            valid_themes.append({
-                'theme': theme_name,
-                'planned_sessions': min(max(int(t.get('planned_sessions', 1)), 1), 20),
-                'notes': str(t.get('notes', ''))[:500]
-            })
+        # Process themes
+        themes = data.get('themes', [])
+        valid_themes = []
+        for t in themes:
+            theme_name = t.get('theme')
+            if theme_name and theme_name in config['categories']:
+                valid_themes.append({
+                    'theme': theme_name,
+                    'planned_sessions': min(max(int(t.get('planned_sessions', 1)), 1), 20),
+                    'notes': str(t.get('notes', ''))[:500]
+                })
 
-    # Save daily focus
-    notes = str(data.get('notes', ''))[:1000]
-    set_daily_focus(today, valid_themes, notes)
+        # Validate at least one theme
+        if not valid_themes:
+            return jsonify({
+                'success': False,
+                'error': 'Prosím naplánujte alespoň jednu session'
+            }), 400
 
-    # Handle challenge acceptance
-    challenge_accepted = data.get('challenge_accepted', False)
-    challenge_result = None
-    if challenge_accepted:
-        # Mark challenge as accepted in today's focus or similar
-        # The challenge is auto-created, so we just track acceptance
-        challenge_result = {
-            'accepted': True,
-            'challenge': get_or_create_daily_challenge()
-        }
+        # Save daily focus
+        notes = str(data.get('notes', ''))[:1000]
+        set_daily_focus(today, valid_themes, notes)
 
-    # Calculate total planned sessions
-    total_planned = sum(t.get('planned_sessions', 0) for t in valid_themes)
+        # Handle challenge acceptance
+        challenge_accepted = data.get('challenge_accepted', False)
+        challenge_result = None
+        if challenge_accepted:
+            # Mark challenge as accepted in today's focus or similar
+            # The challenge is auto-created, so we just track acceptance
+            challenge_result = {
+                'accepted': True,
+                'challenge': get_or_create_daily_challenge()
+            }
 
-    # Handle wellness check-in data
-    wellness_result = None
-    wellness_data = data.get('wellness')
-    if wellness_data:
-        wellness_id = save_wellness_checkin(
-            target_date=today,
-            sleep_quality=wellness_data.get('sleep_quality'),
-            energy_level=wellness_data.get('energy_level'),
-            mood=wellness_data.get('mood'),
-            stress_level=wellness_data.get('stress_level'),
-            motivation=wellness_data.get('motivation'),
-            focus_ability=wellness_data.get('focus_ability'),
-            notes=wellness_data.get('notes', '')
-        )
-        if wellness_id:
-            wellness_result = get_wellness_checkin(today)
+        # Calculate total planned sessions
+        total_planned = sum(t.get('planned_sessions', 0) for t in valid_themes)
 
-    return jsonify({
-        'success': True,
-        'date': today.isoformat(),
-        'themes': valid_themes,
-        'total_planned_sessions': total_planned,
-        'notes': notes,
-        'challenge': challenge_result,
-        'wellness': wellness_result
-    })
+        # Handle wellness check-in data
+        wellness_result = None
+        wellness_data = data.get('wellness')
+        if wellness_data:
+            wellness_id = save_wellness_checkin(
+                target_date=today,
+                sleep_quality=wellness_data.get('sleep_quality'),
+                energy_level=wellness_data.get('energy_level'),
+                mood=wellness_data.get('mood'),
+                stress_level=wellness_data.get('stress_level'),
+                motivation=wellness_data.get('motivation'),
+                focus_ability=wellness_data.get('focus_ability'),
+                notes=wellness_data.get('notes', '')
+            )
+            if wellness_id:
+                wellness_result = get_wellness_checkin(today)
+
+                # Invalidate morning briefing cache in ML service
+                # This ensures next morning briefing uses fresh wellness data
+                try:
+                    headers = {'X-Request-ID': logger.get_trace_id()}
+                    ml_response = requests.post(
+                        f'{ML_SERVICE_URL}/api/ai/invalidate-cache',
+                        json={'type': 'morning_briefing'},
+                        headers=headers,
+                        timeout=2
+                    )
+                    logger.info("CACHE_INVALIDATED", "Morning briefing cache invalidated after wellness check-in")
+                except Exception as e:
+                    logger.warning("CACHE_INVALIDATE_FAILED", f"Failed to invalidate morning briefing cache: {e}")
+
+        return jsonify({
+            'success': True,
+            'date': today.isoformat(),
+            'themes': valid_themes,
+            'total_planned_sessions': total_planned,
+            'notes': notes,
+            'challenge': challenge_result,
+            'wellness': wellness_result
+        })
+
+    except Exception as e:
+        logger.api_error("START_DAY_SAVE", "SaveError", str(e))
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 
 # WebSocket Events
@@ -2572,7 +2858,8 @@ def handle_timer_complete(data):
     # Invalidate AI caches (new session = new data)
     try:
         import requests
-        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', timeout=2)
+        headers = {'X-Request-ID': logger.get_trace_id()}
+        requests.post(f'{ML_SERVICE_URL}/api/ai/invalidate-cache', headers=headers, timeout=2)
     except Exception:
         pass  # Non-blocking
 
@@ -2616,30 +2903,43 @@ def handle_request_stats():
 
 if __name__ == '__main__':
     # Initialize database
-    print("\n" + "=" * 50)
-    print("  POMODORO TIMER v2.0 - IT Optimized (52/17)")
-    print("  Docker + MongoDB + ML")
-    print("=" * 50)
+    logger.info("APP_STARTUP", message="Pomodoro Timer v2.0 starting", context={"version": "2.0", "mode": "52/17 Deep Work"})
 
     if init_db():
-        print("  Database: Connected")
-        logger.info("STARTUP", "Database connected", {"db_type": "PostgreSQL"})
+        logger.info("DB_CONNECTED", message="Database connected successfully", context={"db_type": "PostgreSQL"})
         # Oprava případných nekonzistencí v XP/level datech
         try:
             fix_result = fix_user_profile_data()
             if fix_result.get('fixed'):
-                print(f"  XP/Level: Fixed (level {fix_result['old_level']} -> {fix_result['new_level']}, total_xp={fix_result['total_xp']})")
+                logger.info("XP_LEVEL_FIXED", message="XP/Level data fixed", context={
+                    "old_level": fix_result['old_level'],
+                    "new_level": fix_result['new_level'],
+                    "total_xp": fix_result['total_xp']
+                })
         except Exception as e:
-            print(f"  XP/Level: Skipped fix ({e})")
-    else:
-        print("  Database: Connection failed (using fallback)")
+            logger.warning("XP_LEVEL_FIX_SKIPPED", message="XP/Level fix skipped", error={"type": "FixError", "message": str(e)})
 
-    print(f"\n  Open in browser: http://localhost:5000")
-    print(f"\n  Presets:")
-    config = load_config()
-    for key, preset in config['presets'].items():
-        print(f"    - {preset['name']}: {preset['work_minutes']}/{preset['break_minutes']} min")
-    print("\n" + "=" * 50 + "\n")
+        # Start the background scheduler
+        try:
+            from utils.scheduler import start_scheduler, stop_scheduler
+            DATABASE_URL = os.getenv('DATABASE_URL', 'postgresql://pomodoro:pomodoro_secret@localhost:5432/pomodoro')
+            start_scheduler(DATABASE_URL)
+            logger.info("SCHEDULER_STARTED", message="Scheduler started successfully", context={"auto_end_day": "23:59"})
+
+            # Register shutdown handler
+            @atexit.register
+            def shutdown():
+                stop_scheduler()
+                logger.info("SCHEDULER_STOPPED", message="Scheduler stopped on shutdown")
+        except Exception as e:
+            logger.error("SCHEDULER_FAILED", message="Failed to start scheduler", exception=e)
+    else:
+        logger.critical("DB_CONNECTION_FAILED", message="Database connection failed, using fallback mode")
+
+    logger.info("APP_READY", message="Application ready to accept requests", context={
+        "url": "http://localhost:5000",
+        "presets": list(load_config()['presets'].keys())
+    })
 
     debug_mode = os.getenv('FLASK_ENV') == 'development' and os.getenv('FLASK_DEBUG', '0') == '1'
     socketio.run(app, host='0.0.0.0', port=5000, debug=debug_mode, allow_unsafe_werkzeug=True)

@@ -11,6 +11,14 @@ from typing import Optional, Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
+# Import diversity detection for category burnout avoidance
+try:
+    from .diversity_detector import DiversityDetector
+    DIVERSITY_AVAILABLE = True
+except ImportError:
+    logger.warning("DiversityDetector not available, category burnout detection disabled")
+    DIVERSITY_AVAILABLE = False
+
 
 class AIChallengeGenerator:
     """Generates personalized challenges and quests using Ollama AI"""
@@ -137,6 +145,15 @@ class AIChallengeGenerator:
         # User's categories for AI suggestions
         self.categories = categories or []
 
+        # Initialize diversity detector for category burnout avoidance
+        self.diversity_detector = None
+        if DIVERSITY_AVAILABLE:
+            try:
+                self.diversity_detector = DiversityDetector(categories=self.categories)
+                logger.info("DiversityDetector initialized for category burnout detection")
+            except Exception as e:
+                logger.warning(f"Failed to initialize DiversityDetector: {e}")
+
         logger.info(f"AIChallengeGenerator initialized: provider={self.ai_provider}, model={self.model}")
 
     def update_categories(self, categories: List[str]):
@@ -146,6 +163,12 @@ class AIChallengeGenerator:
             categories: List of category names from config
         """
         self.categories = categories or []
+
+        # Also update DiversityDetector categories
+        if self.diversity_detector:
+            self.diversity_detector.categories = categories or []
+            logger.info(f"DiversityDetector categories updated: {len(self.diversity_detector.categories)} categories")
+
         logger.info(f"AIChallengeGenerator categories updated: {len(self.categories)} categories")
 
     def clear_cache(self, cache_type: str = None) -> int:
@@ -476,7 +499,7 @@ Profil uzivatele:
 - Level: {user_profile.get('level', 1)}
 - XP: {user_profile.get('xp', 0)}
 - Prumer sessions/tyden: {user_profile.get('weekly_avg', 15)}
-- Nejlepsi kategorie: {user_profile.get('best_categories', ['Coding'])}
+- Nejlepsi kategorie: {user_profile.get('best_categories', ['Other'])}
 
 Pravidla:
 1. Kazdy quest by mel trvat cely tyden
@@ -487,7 +510,7 @@ Pravidla:
 Vrat JSON pole v tomto formatu:
 [
     {{"id": "wq_1", "title": "Nazev", "description": "Popis", "target": 20, "xp_reward": 150, "category": null}},
-    {{"id": "wq_2", "title": "Nazev", "description": "Popis", "target": 15, "xp_reward": 150, "category": "Coding"}},
+    {{"id": "wq_2", "title": "Nazev", "description": "Popis", "target": 15, "xp_reward": 150, "category": "Other"}},
     {{"id": "wq_3", "title": "Nazev", "description": "Popis", "target": 7, "xp_reward": 200, "category": null}}
 ]"""
 
@@ -793,7 +816,9 @@ Vrat JSON v tomto PRESNEM formatu:
         cache_key = self._get_cache_key("next_session", {
             "date": datetime.now().strftime("%Y-%m-%d"),  # Include date for daily variety
             "hour": context.get('time_of_day', 12),
-            "sessions": context.get('sessions_today', 0)
+            "sessions": context.get('sessions_today', 0),
+            "last_category": context.get('last_category', ''),  # Add for more variety
+            "exclude_topic": context.get('exclude_topic', '')  # Already used but make explicit
         })
 
         # Skip cache if exclude_topic is provided OR bypass_cache is True
@@ -879,11 +904,81 @@ CRITICAL RULES:
         job_hunting_count = categories_breakdown.get('Job Hunting', 0)
         job_hunting_note = "ALERT: No Job Hunting this week!" if job_hunting_count == 0 else f"Job Hunting: {job_hunting_count}x this week"
 
+        # NEW: Get recent completed tasks for variety (from weekly_stats)
+        recent_tasks = weekly_stats.get('recent_tasks', [])
+        recent_topics = weekly_stats.get('recent_topics', [])
+        last_session_hours_ago = weekly_stats.get('last_session_hours_ago', None)
+
+        # Format recent tasks for prompt (max 5)
+        recent_tasks_list = []
+        for task in recent_tasks[:5]:
+            task_name = task.get('task', 'Unknown')[:40]
+            category = task.get('category', 'Unknown')
+            hours_ago = task.get('hours_ago', None)
+            time_ago = f"{int(hours_ago)}h ago" if hours_ago is not None else "recently"
+            recent_tasks_list.append(f"- {time_ago}: {task_name} ({category})")
+        recent_tasks_str = "\n".join(recent_tasks_list) if recent_tasks_list else "No recent tasks"
+
+        # Calculate freshness context
+        freshness_note = ""
+        if last_session_hours_ago is not None:
+            if last_session_hours_ago < 1:
+                freshness_note = "ALERT: User just finished a session (<1h ago) - suggest a DIFFERENT type of work!"
+            elif last_session_hours_ago > 24:
+                freshness_note = "Note: User hasn't worked in >24h - suggest an easy task to get back into flow."
+
         # Build exclusion note for "Jiný nápad" functionality
         exclude_topic = context.get('exclude_topic', '')
         exclusion_note = f"\n\nIMPORTANT: User wants a DIFFERENT suggestion. Do NOT suggest this topic: '{exclude_topic}'. Suggest something completely different!\n" if exclude_topic else ""
 
+        # ============================================================================
+        # DIVERSITY CHECK - Category Burnout Detection
+        # ============================================================================
+        diversity_note = ""
+        diversity_reasoning = ""
+        if self.diversity_detector:
+            try:
+                # Get recent sessions for diversity analysis
+                # Use recent_sessions from context if available
+                recent_sessions = context.get('recent_sessions', [])
+
+                # Fallback to weekly_stats recent_tasks if recent_sessions not available
+                if not recent_sessions and 'recent_tasks' in weekly_stats:
+                    # Convert recent_tasks to session format
+                    for task in weekly_stats['recent_tasks'][:20]:  # Last 20 tasks
+                        recent_sessions.append({
+                            'category': task.get('category', 'Unknown'),
+                            'task': task.get('task', ''),
+                            'notes': task.get('task', ''),  # Use task as notes proxy
+                            'date': task.get('date', datetime.now().strftime('%Y-%m-%d'))
+                        })
+
+                if recent_sessions:
+                    diversity_check = self.diversity_detector.detect_category_overload(
+                        sessions=recent_sessions,
+                        days=2,
+                        threshold=0.70  # 70% threshold
+                    )
+
+                    if diversity_check.get('overloaded_categories'):
+                        avoid_list = ", ".join(diversity_check['avoid_categories'])
+                        alternatives = ", ".join(diversity_check['recommended_alternatives'])
+
+                        diversity_note = f"""
+CRITICAL - CATEGORY BURNOUT DETECTED:
+The user has been heavily focused on: {avoid_list}
+DO NOT suggest these categories: {avoid_list}
+Recommended alternatives: {alternatives}
+Reason: {diversity_check['overload_reason']}
+"""
+                        diversity_reasoning = diversity_check.get('reasoning', '')
+                        logger.info(f"Category burnout detected: {diversity_check['overloaded_categories']}")
+            except Exception as e:
+                logger.warning(f"Diversity check failed: {e}")
+
         prompt = f"""Suggest next Pomodoro session.{exclusion_note}
+
+{diversity_note}
 
 CURRENT CONTEXT:
 - Time: {hour}:00 ({time_context})
@@ -899,7 +994,19 @@ WEEKLY STATS (last 7 days):
 - Streak: {weekly_stats.get('streak', 0)} days
 - {job_hunting_note}
 
+RECENTLY COMPLETED (avoid suggesting similar topics):
+{recent_tasks_str}
+
+{freshness_note}
+
 ALLOWED CATEGORIES: {categories_str}
+
+VARIETY RULES (IMPORTANT - avoid repetition):
+1. DO NOT suggest a topic if a similar one was completed in the last 24 hours
+2. DO NOT repeat the same category if it was used >50% this week
+3. If last session was <1 hour ago -> suggest a DIFFERENT type of work
+4. Avoid repeating the exact same task/topic as recent tasks listed above
+5. For "Jiný nápad" requests: suggest something completely different from usual
 
 DECISION LOGIC:
 1. Morning (6-12): Deep work - complex tasks, {self._get_time_recommendation(hour)}
@@ -926,6 +1033,13 @@ Return ONLY this JSON (no other text):
             # Validate and fix category if needed
             result = self._validate_and_fix_category(result)
             result['ai_generated'] = True
+
+            # Add diversity reasoning if available
+            if diversity_reasoning:
+                result['diversity_reasoning'] = diversity_reasoning
+                result['avoid_categories'] = diversity_check.get('avoid_categories', [])
+                result['recommended_alternatives'] = diversity_check.get('recommended_alternatives', [])
+
             return result
 
         return None
@@ -1172,6 +1286,47 @@ Vrat JSON:
             "recommendations": recommendations,
             "warnings": []
         }
+
+    # =========================================================================
+    # Helper Functions
+    # =========================================================================
+
+    @staticmethod
+    def derive_tools_from_categories(categories: list) -> list:
+        """Map categories to tools automatically for AI recommendations.
+
+        Derives the tools/technologies a user is likely working with based on
+        their configured categories. This helps provide tool-specific recommendations.
+
+        Args:
+            categories: List of user's configured category names
+
+        Returns:
+            List of tool names derived from categories
+
+        Example:
+            Input: ["SOAP", "Robot Framework", "REST API", "Database"]
+            Output: ["SOAP UI", "ReadyAPI", "Robot Framework", "Python",
+                     "Postman", "REST Assured", "curl", "DBeaver", "SQL",
+                     "PostgreSQL"]
+        """
+        category_to_tools = {
+            "SOAP": ["SOAP UI", "ReadyAPI", "Groovy"],
+            "Robot Framework": ["Robot Framework", "Python", "RIDE"],
+            "REST API": ["Postman", "REST Assured", "curl", "HTTPie"],
+            "Database": ["DBeaver", "SQL", "PostgreSQL", "MySQL", "MongoDB"],
+            "Frontend": ["TypeScript", "JavaScript", "Playwright", "Cypress", "Selenium"],
+            "Job Hunting": ["CV/Resume", "LinkedIn", "Portfolio"],
+            "Learning": ["Documentation", "Tutorials", "Online courses"],
+            "Other": []
+        }
+
+        tools = set()
+        for category in categories:
+            if category in category_to_tools:
+                tools.update(category_to_tools[category])
+
+        return sorted(list(tools))
 
     # =========================================================================
     # Expand Suggestion - Follow-up questions for AI recommendations

@@ -36,6 +36,74 @@ app = Flask(__name__)
 CORS(app)
 
 # =============================================================================
+# REQUEST LOGGING MIDDLEWARE
+# =============================================================================
+@app.before_request
+def log_incoming_request():
+    """Log incoming requests for observability."""
+    # Skip metrics endpoint for noise reduction
+    if request.path == '/metrics':
+        return
+
+    # Extract trace ID from X-Request-ID header for distributed tracing
+    trace_id = request.headers.get('X-Request-ID')
+    if trace_id:
+        logger.set_trace_id(trace_id)
+
+    request.start_time = time.time()
+    logger.debug("request_received",
+                 message="Incoming request",
+                 context={
+                     "method": request.method,
+                     "path": request.path,
+                     "query_args": dict(request.args),
+                     "remote_addr": request.remote_addr
+                 })
+
+@app.after_request
+def log_request_response(response):
+    """Log completed requests with timing information."""
+    # Skip metrics endpoint
+    if request.path == '/metrics':
+        return response
+
+    # Calculate duration if start_time was set
+    duration_ms = None
+    if hasattr(request, 'start_time'):
+        duration_ms = round((time.time() - request.start_time) * 1000, 2)
+
+    # Determine log level based on status code
+    if response.status_code >= 500:
+        logger.error("request_completed",
+                    message=f"Request completed with server error",
+                    context={
+                        "method": request.method,
+                        "path": request.path,
+                        "status": response.status_code
+                    },
+                    metrics={"duration_ms": duration_ms} if duration_ms else None)
+    elif response.status_code >= 400:
+        logger.warning("request_completed",
+                      message=f"Request completed with client error",
+                      context={
+                          "method": request.method,
+                          "path": request.path,
+                          "status": response.status_code
+                      },
+                      metrics={"duration_ms": duration_ms} if duration_ms else None)
+    else:
+        logger.info("request_completed",
+                    message="Request completed successfully",
+                    context={
+                        "method": request.method,
+                        "path": request.path,
+                        "status": response.status_code
+                    },
+                    metrics={"duration_ms": duration_ms} if duration_ms else None)
+
+    return response
+
+# =============================================================================
 # PROMETHEUS METRICS
 # =============================================================================
 metrics = PrometheusMetrics(app, path=None)  # Disable automatic /metrics endpoint
@@ -68,27 +136,23 @@ def init_db():
     try:
         db_connected = database.init_db()
         if db_connected:
-            print("ML Service connected to PostgreSQL")
             logger.db_connected("PostgreSQL")
 
             # Initialize AI Analyzer
             ai_analyzer = AIAnalyzer()
-            print("AI Analyzer initialized")
-            logger.info("STARTUP", "AI Analyzer initialized", {"model": os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')})
+            logger.info("AI_ANALYZER_INITIALIZED", message="AI Analyzer initialized successfully", context={"model": os.getenv('OLLAMA_MODEL', 'qwen2.5:14b')})
 
             # Clear AI cache on startup (docker-compose up)
             try:
                 deleted = database.clear_all_cache()
-                print(f"AI cache cleared on startup ({deleted} entries)")
                 logger.cache_invalidated("all", "startup", deleted)
             except Exception as e:
-                print(f"Warning: Could not clear AI cache: {e}")
+                logger.warning("CACHE_CLEAR_FAILED", message="Could not clear AI cache on startup", error={"type": "CacheError", "message": str(e)})
 
             return True
         return False
     except Exception as e:
-        print(f"PostgreSQL connection failed: {e}")
-        logger.db_error("init", str(e))
+        logger.error("DB_INIT_FAILED", message="PostgreSQL connection failed", exception=e)
         return False
 
 
@@ -103,18 +167,23 @@ def get_sessions():
 def get_rich_context_for_ai():
     """
     Načte bohatý kontext pro AI doporučení.
-    Obsahuje týdenní statistiky, produktivitu a rozložení kategorií.
+    Obsahuje týdenní statistiky, produktivitu, rozložení kategorií a poslední dokončené úkoly.
     """
     if not db_connected:
         return {
             'weekly_total': 0,
             'avg_productivity': 0,
             'categories': {},
-            'streak': 0
+            'streak': 0,
+            'recent_tasks': [],
+            'recent_topics': [],
+            'last_session_hours_ago': None
         }
 
     try:
-        sessions = database.get_sessions_with_notes(7)  # posledních 7 dní
+        from datetime import datetime, timedelta
+
+        sessions = database.get_sessions_with_notes(30)  # posledních 30 dní pro více historie
 
         # Spočítat statistiky
         categories = {}
@@ -129,7 +198,6 @@ def get_rich_context_for_ai():
                 productivity_count += 1
 
         # Spočítat streak (po sobě jdoucí dny s alespoň 1 session)
-        from datetime import datetime, timedelta
         streak = 0
         today = datetime.now().date()
         dates_with_sessions = set(s.get('date') for s in sessions if s.get('date'))
@@ -141,19 +209,76 @@ def get_rich_context_for_ai():
             elif i > 0:  # První den (dnes) může být prázdný
                 break
 
+        # NEW: Získat posledních 10 dokončených tasks pro vyhnutí se opakováním
+        recent_tasks = []
+        recent_topics = []
+        now = datetime.now()
+
+        for s in sessions[:10]:  # Prvních 10 (nejnovější)
+            task = s.get('task', '').strip()
+            category = s.get('category', 'Other')
+            session_date = s.get('date', '')
+            session_time = s.get('time', '')
+
+            if task:  # Pouze tasks s názvem
+                # Vypočitat jak dávno to bylo
+                hours_ago = None
+                if session_date:
+                    try:
+                        # Parse date and time
+                        if session_time:
+                            dt_str = f"{session_date} {session_time}"
+                            session_dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M')
+                        else:
+                            session_dt = datetime.strptime(session_date, '%Y-%m-%d')
+                        hours_ago = (now - session_dt).total_seconds() / 3600
+                    except:
+                        hours_ago = None
+
+                recent_tasks.append({
+                    'task': task,
+                    'category': category,
+                    'date': session_date,
+                    'hours_ago': hours_ago
+                })
+                recent_topics.append(task)
+
+        # Vypočitat čas od poslední session
+        last_session_hours_ago = None
+        if sessions:
+            last_s = sessions[0]  # První je nejnovější
+            last_date = last_s.get('date', '')
+            last_time = last_s.get('time', '')
+            if last_date:
+                try:
+                    if last_time:
+                        dt_str = f"{last_date} {last_time}"
+                        last_dt = datetime.strptime(dt_str, '%Y-%m-%d %H:%M')
+                    else:
+                        last_dt = datetime.strptime(last_date, '%Y-%m-%d')
+                    last_session_hours_ago = (now - last_dt).total_seconds() / 3600
+                except:
+                    pass
+
         return {
             'weekly_total': len(sessions),
             'avg_productivity': round(total_productivity / productivity_count, 1) if productivity_count > 0 else 0,
             'categories': categories,
-            'streak': streak
+            'streak': streak,
+            'recent_tasks': recent_tasks,
+            'recent_topics': recent_topics,
+            'last_session_hours_ago': last_session_hours_ago
         }
     except Exception as e:
-        print(f"Error getting rich context: {e}")
+        logger.warning("RICH_CONTEXT_ERROR", message="Error getting rich context", error={"type": "ContextError", "message": str(e)})
         return {
             'weekly_total': 0,
             'avg_productivity': 0,
             'categories': {},
-            'streak': 0
+            'streak': 0,
+            'recent_tasks': [],
+            'recent_topics': [],
+            'last_session_hours_ago': None
         }
 
 
@@ -408,7 +533,7 @@ def optimal_schedule():
         result = optimizer.analyze(day=target_day, num_sessions=num_sessions)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in optimal-schedule: {e}")
+        logger.warning("OPTIMAL_SCHEDULE_ERROR", message="Error in optimal-schedule", error={"type": "ScheduleError", "message": str(e)})
         return jsonify({
             'error': str(e),
             'date': datetime.now().strftime('%Y-%m-%d'),
@@ -487,7 +612,7 @@ def predict_quality():
         )
         return jsonify(result)
     except Exception as e:
-        print(f"Error in predict-quality: {e}")
+        logger.warning("QUALITY_PREDICTION_ERROR", message="Error in predict-quality", error={"type": "PredictionError", "message": str(e)})
         return jsonify({
             'error': str(e),
             'predicted_productivity': 70.0,
@@ -536,8 +661,7 @@ def detect_anomalies():
 
         return jsonify(result)
     except Exception as e:
-        print(f"Error in detect-anomalies: {e}")
-        logger.error("ML_ERROR", f"Anomaly detection failed: {str(e)}", error={"type": type(e).__name__, "message": str(e)})
+        logger.error("ANOMALY_DETECTION_ERROR", message="Error in detect-anomalies", exception=e)
         return jsonify({
             'error': str(e),
             'anomalies_detected': 0,
@@ -549,6 +673,50 @@ def detect_anomalies():
                 'model_version': '1.0',
                 'error_message': str(e)
             }
+        }), 500
+
+
+@app.route('/api/debug/diversity', methods=['GET'])
+def debug_diversity():
+    """Debug endpoint to test diversity detection."""
+    try:
+        from models.diversity_detector import DiversityDetector
+        from datetime import datetime, timedelta
+
+        # Get recent sessions - already ordered DESC (newest first)
+        sessions = get_sessions()
+
+        # Create detector with current categories
+        categories = ai_generator.categories if ai_generator else []
+        detector = DiversityDetector(categories=categories)
+
+        # Show what sessions we're analyzing
+        recent_sessions = sessions[:20]  # First 20 are most recent
+        cutoff_date = (datetime.now() - timedelta(days=2)).strftime('%Y-%m-%d')
+
+        # Test detection
+        result = detector.detect_category_overload(
+            sessions=recent_sessions,
+            days=2,
+            threshold=0.70
+        )
+
+        return jsonify({
+            'status': 'ok',
+            'cutoff_date': cutoff_date,
+            'ai_generator_categories': categories,
+            'detector_categories': detector.categories,
+            'recent_sessions': [{'date': s.get('date'), 'category': s.get('category')} for s in recent_sessions[:10]],
+            'total_sessions_in_db': len(sessions),
+            'total_sessions_analyzed': len(recent_sessions),
+            'diversity_result': result
+        })
+    except Exception as e:
+        import traceback
+        return jsonify({
+            'status': 'error',
+            'error': str(e),
+            'traceback': traceback.format_exc()
         }), 500
 
 
@@ -919,7 +1087,7 @@ def ai_weekly_quest():
         'level': request.args.get('level', 1, type=int),
         'xp': request.args.get('xp', 0, type=int),
         'weekly_avg': request.args.get('weekly_avg', 15, type=float),
-        'best_categories': request.args.getlist('best_categories') or ['Coding']
+        'best_categories': request.args.getlist('best_categories') or (ai_generator.categories[:1] if ai_generator.categories else ['Other'])
     }
 
     quests = ai_generator.generate_weekly_quests(user_profile)
@@ -965,7 +1133,7 @@ def ai_achievement_focus():
         try:
             achievements = database.get_achievements()
         except Exception as e:
-            print(f"Error fetching achievements: {e}")
+            logger.warning("ACHIEVEMENTS_FETCH_ERROR", message="Error fetching achievements", error={"type": "FetchError", "message": str(e)})
             achievements = []
     else:
         achievements = []
@@ -1008,7 +1176,7 @@ def ai_learning_recommendations():
         result = ai_generator.generate_learning_recommendations(user_data)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in learning-recommendations: {e}")
+        logger.warning("LEARNING_RECOMMENDATIONS_ERROR", message="Error in learning-recommendations", error={"type": "MLError", "message": str(e)})
         from models.pydantic_models import FallbackSuggestion
         return jsonify(FallbackSuggestion.get_learning_recommendation())
 
@@ -1049,10 +1217,13 @@ def ai_next_session_suggestion():
             categories = [c.strip() for c in categories_param.split(',') if c.strip()]
             if categories:
                 ai_generator.update_categories(categories)
-                print(f"Updated AI categories from request: {categories}")
+                logger.info("CATEGORIES_UPDATED", message="Updated AI categories from request", context={"categories": categories})
 
         # Bohatý kontext z databáze
         rich_context = get_rich_context_for_ai()
+
+        # Get recent sessions directly for diversity detection
+        recent_sessions = get_sessions()[:20]  # Last 20 sessions
 
         context = {
             'last_category': request.args.get('category', ''),
@@ -1063,6 +1234,8 @@ def ai_next_session_suggestion():
             'sessions_today': request.args.get('sessions', 0, type=int),
             # Bohatší kontext
             'weekly_stats': rich_context,
+            # Recent sessions for diversity detection
+            'recent_sessions': recent_sessions,
             'user_profile': {
                 'role': 'Tester',
                 'style': 'pragmatic',
@@ -1077,7 +1250,7 @@ def ai_next_session_suggestion():
         result = ai_generator.suggest_next_session_topic(context)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in next-session-suggestion: {e}")
+        logger.warning("NEXT_SESSION_ERROR", message="Error in next-session-suggestion", error={"type": "MLError", "message": str(e)})
         from models.pydantic_models import FallbackSuggestion
         return jsonify(FallbackSuggestion.get_session_suggestion(
             request.args.get('category'),
@@ -1152,14 +1325,14 @@ def ai_expand_suggestion():
                 'user_tools': user_tools,
                 'all_recent_tasks': all_tasks[:20]  # broader context
             }
-            print(f"User context for expand: {len(category_sessions)} sessions in '{category}'")
+            logger.debug("EXPAND_CONTEXT", message="User context gathered", context={"category": category, "sessions_count": len(category_sessions)})
         except Exception as e:
-            print(f"Warning: Could not get user context: {e}")
+            logger.warning("EXPAND_CONTEXT_WARNING", message="Could not get user context", error={"type": "ContextError", "message": str(e)})
 
         result = ai_generator.expand_suggestion(suggestion, question_type, user_context)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in expand-suggestion: {e}")
+        logger.warning("EXPAND_SUGGESTION_ERROR", message="Error in expand-suggestion", error={"type": "MLError", "message": str(e)})
         return jsonify({
             'answer': 'AI dočasně nedostupná. Zkus to později.',
             'type': 'error',
@@ -1201,13 +1374,13 @@ def ai_extract_topics():
                     if s.get('task')
                 ]
             except Exception as e:
-                print(f"Error fetching tasks: {e}")
+                logger.warning("TASKS_FETCH_ERROR", message="Error fetching tasks", error={"type": "FetchError", "message": str(e)})
                 tasks = []
 
         result = ai_generator.extract_topics_from_tasks(tasks)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in extract-topics: {e}")
+        logger.warning("EXTRACT_TOPICS_ERROR", message="Error in extract-topics", error={"type": "MLError", "message": str(e)})
         return jsonify({
             "technologies": [],
             "concepts": [],
@@ -1239,7 +1412,7 @@ def ai_analyze_patterns():
         result = ai_generator.analyze_productivity_patterns(data)
         return jsonify(result)
     except Exception as e:
-        print(f"Error in analyze-patterns: {e}")
+        logger.warning("ANALYZE_PATTERNS_ERROR", message="Error in analyze-patterns", error={"type": "MLError", "message": str(e)})
         return jsonify({
             "productivity": {
                 "best_hours": [9, 10, 14],
@@ -1306,7 +1479,7 @@ def _gather_user_analytics() -> dict:
             'user_profile': user_profile
         }
     except Exception as e:
-        print(f"Error gathering user analytics: {e}")
+        logger.warning("USER_ANALYTICS_ERROR", message="Error gathering user analytics", error={"type": "AnalyticsError", "message": str(e)})
         return {}
 
 
@@ -1343,7 +1516,7 @@ def _gather_productivity_data() -> dict:
             'daily_stats': dict(daily_stats)
         }
     except Exception as e:
-        print(f"Error gathering productivity data: {e}")
+        logger.warning("PRODUCTIVITY_DATA_ERROR", message="Error gathering productivity data", error={"type": "DataError", "message": str(e)})
         return {}
 
 
@@ -1406,7 +1579,7 @@ def semantic_search():
             'results': []
         }), 503
     except Exception as e:
-        print(f"Semantic search error: {e}")
+        logger.warning("SEMANTIC_SEARCH_ERROR", message="Semantic search error", error={"type": "SearchError", "message": str(e)})
         return jsonify({
             'error': str(e),
             'results': []
@@ -1629,50 +1802,28 @@ def ai_cache_status():
 
 
 if __name__ == '__main__':
-    print("\n" + "=" * 50)
-    print("  POMODORO ML SERVICE")
-    print("=" * 50)
+    logger.info("ML_SERVICE_STARTUP", message="Pomodoro ML Service starting", context={
+        "version": "2.0",
+        "api_url": "http://localhost:5002/api"
+    })
 
     if init_db():
-        print("  PostgreSQL: Connected")
+        logger.db_connected("PostgreSQL")
     else:
-        print("  PostgreSQL: Connection failed")
+        logger.critical("DB_CONNECTION_FAILED", message="PostgreSQL connection failed for ML service")
 
-    print(f"\n  API available at: http://localhost:5002/api")
-    print("\n  Endpoints:")
-    print("    GET  /api/health           - Health check")
-    print("    GET  /api/analysis         - Full productivity analysis")
-    print("    GET  /api/recommendation   - Get preset recommendation")
-    print("    GET  /api/prediction/today - Today's prediction")
-    print("    GET  /api/prediction/week  - Weekly forecast")
-    print("    GET  /api/trends           - Recent trends")
-    print("    GET  /api/burnout-risk     - Burnout risk assessment")
-    print("    GET  /api/optimal-schedule - Focus Optimizer schedule")
-    print("    GET  /api/predict-quality  - Session Quality Predictor")
-    print("    GET  /api/detect-anomalies - Pattern Anomaly Detector")
-    print("    POST /api/train            - Retrain models")
-    print("\n  AI Endpoints (Ollama):")
-    print("    GET  /api/ai/health           - AI service health")
-    print("    GET  /api/ai/daily-challenge  - AI daily challenge")
-    print("    GET  /api/ai/weekly-quest     - AI weekly quests")
-    print("    GET  /api/ai/motivation       - AI motivation message")
-    print("    GET  /api/ai/achievement-focus - Achievement suggestion")
-    print("\n  FocusAI Learning Endpoints:")
-    print("    POST /api/ai/learning-recommendations - Full learning analysis")
-    print("    GET  /api/ai/next-session-suggestion  - Quick session suggestion")
-    print("    POST /api/ai/extract-topics           - Extract topics from tasks")
-    print("    POST /api/ai/analyze-patterns         - Productivity pattern analysis")
-    print("\n  NEW AI Analyzer Endpoints (Full LLM with Notes):")
-    print("    GET  /api/ai/morning-briefing    - Morning briefing & daily plan")
-    print("    GET  /api/ai/evening-review      - Evening review & reflection")
-    print("    GET  /api/ai/integrated-insight  - Cross-model recommendations")
-    print("    GET  /api/ai/analyze-burnout     - LLM burnout analysis")
-    print("    GET  /api/ai/analyze-anomalies   - LLM anomaly detection")
-    print("    GET  /api/ai/analyze-quality     - LLM quality prediction")
-    print("    GET  /api/ai/optimal-schedule-ai - LLM schedule optimization")
-    print("    GET  /api/ai/learning-v2         - LLM learning recommendations")
-    print("    POST /api/ai/invalidate-cache    - Invalidate AI cache")
-    print("    GET  /api/ai/cache-status        - AI cache status")
-    print("\n" + "=" * 50 + "\n")
+    logger.info("ML_SERVICE_READY", message="ML service ready to accept requests", context={
+        "endpoints": {
+            "health": "/api/health",
+            "analysis": "/api/analysis",
+            "recommendation": "/api/recommendation",
+            "prediction": "/api/prediction/today",
+            "burnout_risk": "/api/burnout-risk",
+            "optimal_schedule": "/api/optimal-schedule",
+            "predict_quality": "/api/predict-quality",
+            "detect_anomalies": "/api/detect-anomalies",
+            "ai_endpoints": "/api/ai/*"
+        }
+    })
 
     app.run(host='0.0.0.0', port=5002, debug=True)

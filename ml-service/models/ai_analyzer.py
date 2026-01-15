@@ -695,7 +695,7 @@ class AIAnalyzer:
     # =========================================================================
 
     def morning_briefing(self) -> Dict:
-        """Generate comprehensive morning briefing with RAG context."""
+        """Generate comprehensive morning briefing with RAG context and wellness data."""
         # Check cache
         cached = self.cache.get_cached('morning_briefing')
         if cached:
@@ -719,6 +719,27 @@ class AIAnalyzer:
         yesterday_ratings = [s.get('productivity_rating') for s in yesterday_sessions if s.get('productivity_rating')]
         yesterday_rating = sum(yesterday_ratings) / len(yesterday_ratings) if yesterday_ratings else 0
 
+        # Get today's wellness check-in
+        wellness = database.get_wellness_checkin()
+        wellness_summary = ""
+        if wellness:
+            wellness_summary = "Today's wellness check-in:\n"
+            metrics = [
+                ('Sleep Quality', wellness.get('sleep_quality')),
+                ('Energy Level', wellness.get('energy_level')),
+                ('Mood', wellness.get('mood')),
+                ('Stress Level', wellness.get('stress_level')),
+                ('Motivation', wellness.get('motivation')),
+                ('Focus Ability', wellness.get('focus_ability'))
+            ]
+            for name, value in metrics:
+                if value is not None:
+                    wellness_summary += f"- {name}: {value:.0f}%\n"
+            if wellness.get('notes'):
+                wellness_summary += f"Notes: {wellness['notes']}\n"
+        else:
+            wellness_summary = "No wellness check-in completed yet today.\n"
+
         # Get RAG context for productivity patterns
         rag_context = self._get_rag_context(
             f"morning productivity patterns {today.strftime('%A')} focus work",
@@ -733,7 +754,8 @@ class AIAnalyzer:
             'yesterday_sessions': len(yesterday_sessions),
             'yesterday_rating': round(yesterday_rating, 1),
             'streak': profile.get('streak', 0),
-            'yesterday_notes': yesterday_notes
+            'yesterday_notes': yesterday_notes,
+            'wellness_summary': wellness_summary
         }
 
         # Build prompt with RAG context
@@ -754,7 +776,7 @@ class AIAnalyzer:
         return self._get_preset_recommender_fallback()
 
     def evening_review(self) -> Dict:
-        """Generate evening review and reflection."""
+        """Generate evening review and reflection with wellness context."""
         cached = self.cache.get_cached('evening_review')
         if cached:
             return cached
@@ -772,6 +794,25 @@ class AIAnalyzer:
         ratings = [s.get('productivity_rating') for s in today_sessions if s.get('productivity_rating')]
         actual_rating = sum(ratings) / len(ratings) if ratings else 0
 
+        # Get today's wellness check-in for morning vs actual comparison
+        wellness = database.get_wellness_checkin()
+        wellness_summary = ""
+        if wellness:
+            wellness_summary = "Morning wellness check-in:\n"
+            metrics = [
+                ('Energy', wellness.get('energy_level')),
+                ('Mood', wellness.get('mood')),
+                ('Stress', wellness.get('stress_level')),
+                ('Focus', wellness.get('focus_ability'))
+            ]
+            for name, value in metrics:
+                if value is not None:
+                    wellness_summary += f"- {name}: {value:.0f}%\n"
+            if wellness.get('overall_wellness'):
+                wellness_summary += f"Overall wellness: {wellness['overall_wellness']:.0f}%\n"
+        else:
+            wellness_summary = "No wellness check-in completed today.\n"
+
         context = {
             'today_sessions': self.format_session_data(today_sessions),
             'today_notes': today_notes,
@@ -780,7 +821,8 @@ class AIAnalyzer:
             'actual_sessions': len(today_sessions),
             'actual_rating': round(actual_rating, 1),
             'streak': profile.get('streak', 0),
-            'streak_maintained': len(today_sessions) > 0
+            'streak_maintained': len(today_sessions) > 0,
+            'wellness_summary': wellness_summary
         }
 
         prompt = self.prompts['evening'].format(**context)
@@ -796,7 +838,7 @@ class AIAnalyzer:
         return self._create_fallback('evening_review')
 
     def analyze_burnout(self) -> Dict:
-        """Full LLM burnout risk analysis with RAG context."""
+        """Full LLM burnout risk analysis with RAG context and wellness trends."""
         cached = self.cache.get_cached('analyze_burnout')
         if cached:
             return cached
@@ -818,6 +860,31 @@ class AIAnalyzer:
         weekly_ratings = [s.get('productivity_rating') for s in weekly_sessions if s.get('productivity_rating')]
         weekly_rating = sum(weekly_ratings) / len(weekly_ratings) if weekly_ratings else 0
 
+        # Get wellness history for trend analysis
+        wellness_history = database.get_wellness_history(days=7)
+        wellness_trends = database.get_wellness_average(days=7)
+
+        wellness_summary = ""
+        if wellness_trends:
+            wellness_summary = "7-day wellness trends:\n"
+            if wellness_trends.get('avg_stress') is not None:
+                stress_trend = wellness_trends['avg_stress']
+                wellness_summary += f"- Average stress: {stress_trend:.0f}% "
+                if stress_trend > 70:
+                    wellness_summary += "(HIGH - concern)\n"
+                elif stress_trend > 50:
+                    wellness_summary += "(moderate)\n"
+                else:
+                    wellness_summary += "(good)\n"
+            if wellness_trends.get('avg_energy') is not None:
+                wellness_summary += f"- Average energy: {wellness_trends['avg_energy']:.0f}%\n"
+            if wellness_trends.get('avg_mood') is not None:
+                wellness_summary += f"- Average mood: {wellness_trends['avg_mood']:.0f}%\n"
+            if wellness_trends.get('checkin_count', 0) < 3:
+                wellness_summary += f"- Wellness check-ins: Only {wellness_trends['checkin_count']}/7 days\n"
+        else:
+            wellness_summary = "No wellness data available for analysis.\n"
+
         # Get RAG context for burnout-related patterns
         rag_context = self._get_rag_context(
             "tired exhausted stress burnout overwork fatigue low energy",
@@ -829,7 +896,8 @@ class AIAnalyzer:
             'streak': profile.get('streak', 0),
             'weekly_sessions': len(weekly_sessions),
             'weekly_rating': round(weekly_rating, 1),
-            'night_percentage': round(night_percentage, 1)
+            'night_percentage': round(night_percentage, 1),
+            'wellness_summary': wellness_summary
         }
 
         prompt = self.prompts['burnout'].format(**context)

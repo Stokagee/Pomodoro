@@ -1310,6 +1310,29 @@ function displayAISuggestion(data) {
     if (topicEl) topicEl.textContent = data.topic || 'Osobní rozvoj';
     if (reasonEl) reasonEl.textContent = data.reason || 'Zkoušej nové věci každý den';
 
+    // Display AI reasoning (diversity burnout detection)
+    const reasoningSection = document.getElementById('ai-reasoning-section');
+    const reasoningText = document.getElementById('ai-reasoning-text');
+
+    if (data.diversity_reasoning && reasoningSection && reasoningText) {
+        // Format reasoning for display
+        let reasoningHTML = '';
+
+        if (data.diversity_reasoning) {
+            reasoningHTML += `<em>${data.diversity_reasoning}</em>`;
+        }
+
+        if (data.recommended_alternatives && data.recommended_alternatives.length > 0) {
+            const alternatives = data.recommended_alternatives.slice(0, 2).join(' nebo ');
+            reasoningHTML += `<br>Doporučuji <strong>${alternatives}</strong> pro změnu.`;
+        }
+
+        reasoningText.innerHTML = reasoningHTML;
+        reasoningSection.classList.remove('hidden');
+    } else if (reasoningSection) {
+        reasoningSection.classList.add('hidden');
+    }
+
     // Display confidence
     const confidence = Math.round((data.confidence || 0.5) * 100);
     if (confidenceBar) confidenceBar.style.width = `${confidence}%`;
@@ -1869,6 +1892,78 @@ function validateWellnessStep() {
 }
 
 /**
+ * Submit wellness data to backend
+ */
+async function submitWellnessData() {
+    const wellnessPayload = {};
+    for (const [key, value] of Object.entries(wellnessData)) {
+        if (value !== null) {
+            wellnessPayload[key] = value;
+        }
+    }
+
+    const wellnessNotesEl = document.getElementById('wellness-notes');
+    if (wellnessNotesEl && wellnessNotesEl.value.trim()) {
+        wellnessPayload.notes = wellnessNotesEl.value.trim();
+    }
+
+    try {
+        const response = await fetch('/api/wellness', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(wellnessPayload)
+        });
+
+        if (response.ok) {
+            const result = await response.json();
+            if (result.success) {
+                console.log('Wellness data saved successfully');
+            }
+        }
+    } catch (err) {
+        console.error('Failed to save wellness data:', err);
+        // Don't block the flow if wellness save fails
+    }
+}
+
+/**
+ * Try to proceed to step 2, validate wellness data first
+ */
+async function tryGoToStep2() {
+    if (!validateWellnessStep()) {
+        const filledCount = Object.values(wellnessData).filter(v => v !== null).length;
+        showToast(`Prosím vyplň alespoň 3 z 6 wellness metrik (aktuálně: ${filledCount}/3)`, 'warning');
+        return;
+    }
+
+    // Get the continue button
+    const continueBtn = document.querySelector('#start-day-step-1 .modal-btn.primary');
+    if (continueBtn) {
+        continueBtn.disabled = true;
+        continueBtn.innerHTML = '<span class="loading-spinner spinner-small"></span> Ukládám...';
+    }
+
+    try {
+        // Submit wellness data first
+        await submitWellnessData();
+
+        // Reload start day data to get fresh morning briefing with wellness context
+        await loadStartDayData();
+
+        goToStartDayStep(2);
+    } catch (err) {
+        console.error('Error during step transition:', err);
+        showToast('Chyba při načítání dat', 'error');
+
+        // Re-enable button on error
+        if (continueBtn) {
+            continueBtn.disabled = false;
+            continueBtn.textContent = 'Pokračovat';
+        }
+    }
+}
+
+/**
  * Pre-fill wellness data if already completed today
  */
 function prefillWellnessData(checkin) {
@@ -1947,6 +2042,15 @@ function goToStartDayStep(stepNumber) {
         stepEl.classList.toggle('active', num === stepNumber);
         stepEl.classList.toggle('completed', num < stepNumber);
     });
+
+    // Reset continue button state when returning to step 1
+    if (stepNumber === 1) {
+        const continueBtn = document.querySelector('#start-day-step-1 .modal-btn.primary');
+        if (continueBtn) {
+            continueBtn.disabled = false;
+            continueBtn.textContent = 'Pokračovat';
+        }
+    }
 }
 
 /**
@@ -2277,6 +2381,12 @@ async function completeStartDay() {
         }
     }
 
+    // Validate at least one theme
+    if (themes.length === 0) {
+        showToast('Prosím naplánujte alespoň jednu session', 'warning');
+        return;
+    }
+
     // Get notes
     const notesEl = document.getElementById('day-notes');
     const notes = notesEl ? notesEl.value : '';
@@ -2302,6 +2412,14 @@ async function completeStartDay() {
         hasWellnessData = true;  // Ensure wellness is sent even if only notes filled
     }
 
+    // Get button and show loading state
+    const startBtn = document.querySelector('#start-day-step-4 .modal-btn.success');
+    const originalBtnText = startBtn ? startBtn.textContent : '';
+    if (startBtn) {
+        startBtn.disabled = true;
+        startBtn.innerHTML = '<span class="loading-spinner spinner-small"></span> Ukládám...';
+    }
+
     try {
         const requestBody = {
             themes: themes,
@@ -2320,22 +2438,200 @@ async function completeStartDay() {
             body: JSON.stringify(requestBody)
         });
 
+        // Check HTTP status first
+        if (!response.ok) {
+            throw new Error(`Server error: ${response.status}`);
+        }
+
         const result = await response.json();
 
         if (result.success) {
             closeStartDayModal();
-            showToast('Den naplánován!', 'success');
+            showToast('Den úspěšně naplánován!', 'success');
 
             // Refresh the page to update widgets
             setTimeout(() => {
                 window.location.reload();
             }, 500);
         } else {
-            showToast('Chyba při ukládání plánu.', 'error');
+            const errorMsg = result.error || 'Chyba při ukládání plánu.';
+            showToast(errorMsg, 'error');
+
+            // Re-enable button on error
+            if (startBtn) {
+                startBtn.disabled = false;
+                startBtn.textContent = originalBtnText;
+            }
         }
     } catch (err) {
         console.error('Failed to save Start Day:', err);
-        showToast('Chyba při ukládání plánu.', 'error');
+        showToast('Chyba při ukládání plánu. Zkuste to znovu.', 'error');
+
+        // Re-enable button on error
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.textContent = originalBtnText;
+        }
+    }
+}
+
+// =============================================================================
+// END DAY / DAILY RECAP FUNCTIONS
+// =============================================================================
+
+let endDayData = {
+    mood: 50,
+    notes: '',
+    todayCategories: []
+};
+
+/**
+ * Open the End Day modal and load today's stats
+ */
+async function openEndDayModal() {
+    const modal = document.getElementById('end-day-modal');
+    if (!modal) return;
+
+    // Reset form
+    endDayData = { mood: 50, notes: '', todayCategories: [] };
+    document.getElementById('end-day-mood').value = 50;
+    document.getElementById('end-day-mood-value').textContent = '50';
+    document.getElementById('end-day-notes').value = '';
+    document.getElementById('end-day-notes-count').textContent = '0';
+
+    // Load today's categories
+    try {
+        const response = await fetch('/api/day/categories/today');
+        const data = await response.json();
+
+        if (data.success && data.categories.length > 0) {
+            endDayData.todayCategories = data.categories;
+
+            // Update summary
+            const sessionsCount = document.getElementById('end-day-sessions-count');
+            const categoriesEl = document.getElementById('end-day-categories');
+
+            if (sessionsCount) sessionsCount.textContent = data.total_sessions;
+
+            if (categoriesEl) {
+                const categoryNames = data.categories.map(c => c.category).join(', ');
+                categoriesEl.textContent = categoryNames || 'Žádné sessions';
+            }
+        } else {
+            // No sessions today
+            document.getElementById('end-day-sessions-count').textContent = '0';
+            document.getElementById('end-day-categories').textContent = 'Zatím žádné sessions';
+        }
+    } catch (error) {
+        console.error('Error loading today\'s categories:', error);
+        document.getElementById('end-day-sessions-count').textContent = '0';
+        document.getElementById('end-day-categories').textContent = '-';
+    }
+
+    // Show modal
+    modal.style.display = 'flex';
+}
+
+/**
+ * Close the End Day modal
+ */
+function closeEndDayModal() {
+    const modal = document.getElementById('end-day-modal');
+    if (modal) {
+        modal.style.display = 'none';
+    }
+}
+
+/**
+ * Update the mood value display
+ */
+function updateEndDayMood(value) {
+    endDayData.mood = parseInt(value);
+    const displayEl = document.getElementById('end-day-mood-value');
+    if (displayEl) {
+        displayEl.textContent = value;
+    }
+}
+
+/**
+ * Submit the End Day form
+ */
+async function submitEndDay() {
+    const notesEl = document.getElementById('end-day-notes');
+    const mood = endDayData.mood;
+    const notes = notesEl ? notesEl.value.trim() : '';
+
+    // Validate
+    if (mood === null || mood === undefined) {
+        showToast('Prosím vyber svoji náladu.', 'error');
+        return;
+    }
+
+    // Prepare data
+    const payload = {
+        end_mood: mood,
+        end_notes: notes
+    };
+
+    try {
+        const response = await fetch('/api/day/complete', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+
+        if (data.success) {
+            // Show success message
+            showToast('Den ukončen! Dobrá práce. 🎉', 'success');
+
+            // Update button state
+            const endDayBtn = document.getElementById('end-day-btn');
+            if (endDayBtn) {
+                endDayBtn.classList.add('day-completed');
+                endDayBtn.querySelector('.end-day-text').textContent = 'Day Completed';
+                endDayBtn.querySelector('.end-day-hint').textContent = `Mood: ${mood}%`;
+                endDayBtn.onclick = null; // Remove click handler
+            }
+
+            // Close modal
+            closeEndDayModal();
+        } else {
+            showToast('Chyba při ukončování dne: ' + (data.error || 'Neznámá chyba'), 'error');
+        }
+    } catch (error) {
+        console.error('Error completing day:', error);
+        showToast('Chyba při ukončování dne.', 'error');
+    }
+}
+
+// Initialize End Day event listeners when DOM is ready
+// (Added to the main DOMContentLoaded listener below)
+
+/**
+ * Check if today's day is already completed and update button state
+ */
+async function checkDayCompletedState() {
+    try {
+        const today = new Date().toISOString().split('T')[0];
+        const response = await fetch(`/api/day/recap/${today}`);
+        const data = await response.json();
+
+        if (data.success && data.recap && data.recap.day_completed) {
+            const endDayBtn = document.getElementById('end-day-btn');
+            if (endDayBtn) {
+                endDayBtn.classList.add('day-completed');
+                endDayBtn.querySelector('.end-day-text').textContent = 'Day Completed';
+                const mood = data.recap.end_mood;
+                endDayBtn.querySelector('.end-day-hint').textContent = `Mood: ${mood}%`;
+                endDayBtn.onclick = null; // Remove click handler
+            }
+        }
+    } catch (error) {
+        console.error('Error checking day completed state:', error);
     }
 }
 
@@ -2361,6 +2657,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 wellnessCountEl.textContent = wellnessNotesEl.value.length;
             });
         }
+
+        // End Day mood slider
+        const endDayMoodSlider = document.getElementById('end-day-mood');
+        if (endDayMoodSlider) {
+            endDayMoodSlider.addEventListener('input', (e) => {
+                updateEndDayMood(e.target.value);
+            });
+        }
+
+        // End Day notes character counter
+        const endDayNotesEl = document.getElementById('end-day-notes');
+        const endDayCountEl = document.getElementById('end-day-notes-count');
+        if (endDayNotesEl && endDayCountEl) {
+            endDayNotesEl.addEventListener('input', () => {
+                endDayCountEl.textContent = endDayNotesEl.value.length;
+            });
+        }
+
+        // Check if day is already completed and update button state
+        checkDayCompletedState();
 
         // FocusAI suggestion is now loaded on-demand via button click
     }

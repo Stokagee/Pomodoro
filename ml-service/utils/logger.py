@@ -6,6 +6,7 @@ Optimized for Grafana Loki ingestion via Promtail
 import json
 import sys
 import uuid
+import traceback
 from datetime import datetime
 from typing import Optional, Dict, Any
 from flask import has_request_context, request
@@ -22,12 +23,20 @@ class StructuredLogger:
 
     def __init__(self, service_name: str = "pomodoro-ml"):
         self.service = service_name
+        self._trace_id = None  # For externally set trace IDs
 
-    def _get_trace_id(self) -> str:
-        """Get trace ID from request header or generate new one."""
+    def get_trace_id(self) -> str:
+        """Get trace ID from externally set value, request header, or generate new one."""
+        # Priority: externally set > request header > generate new
+        if self._trace_id:
+            return self._trace_id
         if has_request_context():
             return request.headers.get('X-Request-ID', str(uuid.uuid4())[:8])
         return str(uuid.uuid4())[:8]
+
+    def set_trace_id(self, trace_id: str):
+        """Set trace ID externally (for distributed tracing)."""
+        self._trace_id = trace_id
 
     def _get_request_context(self) -> Dict[str, Any]:
         """Extract request context if available."""
@@ -56,7 +65,7 @@ class StructuredLogger:
             "service": self.service,
             "event_type": event_type,
             "message": message,
-            "trace_id": self._get_trace_id()
+            "trace_id": self.get_trace_id()
         }
 
         # Add request context if available
@@ -93,9 +102,28 @@ class StructuredLogger:
         self._write(self._format_log("WARNING", event_type, message, context, metrics))
 
     def error(self, event_type: str, message: str,
-              context: Dict = None, error: Dict = None):
-        """Log ERROR level event."""
-        self._write(self._format_log("ERROR", event_type, message, context, error=error))
+              context: Dict = None, error: Dict = None, exception: Exception = None):
+        """Log ERROR level event with optional exception details."""
+        error_dict = error or {}
+        if exception:
+            error_dict.update({
+                "type": type(exception).__name__,
+                "message": str(exception),
+                "traceback": traceback.format_exc()
+            })
+        self._write(self._format_log("ERROR", event_type, message, context, error=error_dict if error_dict else None))
+
+    def critical(self, event_type: str, message: str,
+                 context: Dict = None, error: Dict = None, exception: Exception = None):
+        """Log CRITICAL level event for severe failures."""
+        error_dict = error or {}
+        if exception:
+            error_dict.update({
+                "type": type(exception).__name__,
+                "message": str(exception),
+                "traceback": traceback.format_exc()
+            })
+        self._write(self._format_log("CRITICAL", event_type, message, context, error=error_dict if error_dict else None))
 
     def debug(self, event_type: str, message: str,
               context: Dict = None, metrics: Dict = None):

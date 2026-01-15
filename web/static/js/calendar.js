@@ -12,6 +12,7 @@ class PomodoroCalendar {
         this.weeklyGoals = [];
         this.nextWeekGoals = [];
         this.focusThemes = []; // Current themes for the focus modal
+        this.currentReviewWeek = null; // Currently open review week start date
 
         // Czech month names
         this.monthNames = [
@@ -32,6 +33,7 @@ class PomodoroCalendar {
         await this.loadTodayFocus();
         await this.loadCalendarData();
         this.render();
+        await this.checkAndPromptPendingReview();
     }
 
     bindEvents() {
@@ -80,10 +82,10 @@ class PomodoroCalendar {
             if (e.key === 'Enter') this.addNextWeekGoal();
         });
 
-        // Close modals on overlay click
+        // Close modals on overlay click (but NOT required modals)
         document.querySelectorAll('.modal-overlay').forEach(overlay => {
             overlay.addEventListener('click', (e) => {
-                if (e.target === overlay) {
+                if (e.target === overlay && !overlay.classList.contains('modal-required')) {
                     overlay.classList.add('hidden');
                 }
             });
@@ -92,7 +94,11 @@ class PomodoroCalendar {
         // Keyboard shortcuts
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
-                document.querySelectorAll('.modal-overlay').forEach(m => m.classList.add('hidden'));
+                document.querySelectorAll('.modal-overlay').forEach(m => {
+                    if (!m.classList.contains('modal-required')) {
+                        m.classList.add('hidden');
+                    }
+                });
                 document.getElementById('confirm-dialog')?.classList.add('hidden');
             }
         });
@@ -562,6 +568,22 @@ class PomodoroCalendar {
                 else if (data.productivity_score >= 40) level = 'medium';
                 html += `<span class="productivity-dot ${level}"></span>`;
             }
+        }
+
+        // Show end-of-day mood indicator if day is completed
+        if (data.day_completed && data.end_mood !== undefined && data.end_mood !== null) {
+            const mood = Math.round(data.end_mood);
+            let emoji = '😐';
+            if (mood >= 70) emoji = '😊';
+            else if (mood >= 40) emoji = '🙂';
+            else if (mood < 40) emoji = '😞';
+
+            html += `
+                <div class="day-end-mood" title="End of day mood: ${mood}%">
+                    <span class="mood-emoji">${emoji}</span>
+                    <span class="mood-value">${mood}%</span>
+                </div>
+            `;
         }
 
         return html;
@@ -1045,6 +1067,64 @@ class PomodoroCalendar {
         }
     }
 
+    async checkAndPromptPendingReview() {
+        try {
+            const response = await fetch('/api/review/pending');
+            const data = await response.json();
+
+            if (data.has_pending && data.pending_weeks.length > 0) {
+                const pendingWeek = data.pending_weeks[0];
+                await this.openWeeklyReviewRequired(pendingWeek.week_start);
+            }
+        } catch (error) {
+            console.error('Failed to check for pending reviews:', error);
+        }
+    }
+
+    async openWeeklyReviewRequired(weekStartStr) {
+        const modal = document.getElementById('review-modal');
+        const modalBody = modal.querySelector('.modal-body');
+        const weekStart = new Date(weekStartStr);
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 6);
+
+        // Store the current review week for saving
+        this.currentReviewWeek = weekStartStr;
+
+        // Mark as required - prevents closing without saving
+        modal.classList.add('modal-required');
+
+        // Update title
+        document.getElementById('review-week-title').textContent =
+            `Weekly Review: ${weekStart.getDate()}.${weekStart.getMonth() + 1}. - ${weekEnd.getDate()}.${weekEnd.getMonth() + 1}.${weekEnd.getFullYear()}`;
+
+        // Show modal with loading state
+        modal.classList.remove('hidden');
+        this.setModalLoading(modalBody, true);
+
+        // Load review data
+        try {
+            const [reviewResponse, mlData] = await Promise.all([
+                fetch(`/api/review/week/${weekStartStr}`),
+                this.fetchMLInsights(weekStartStr)
+            ]);
+
+            const reviewData = await reviewResponse.json();
+
+            if (reviewData.success) {
+                this.populateReviewData(reviewData.review, reviewData.stats);
+            }
+
+            this.populateMLInsights(mlData);
+
+        } catch (error) {
+            console.error('Failed to load weekly review:', error);
+            this.showToast('Chyba při načítání review dat', 'error');
+        } finally {
+            this.setModalLoading(modalBody, false);
+        }
+    }
+
     populateReviewData(review, stats) {
         // Stats
         if (stats) {
@@ -1168,19 +1248,31 @@ class PomodoroCalendar {
     }
 
     closeReviewModal() {
+        const modal = document.getElementById('review-modal');
+        if (modal.classList.contains('modal-required')) {
+            this.showToast('Weekly review musí být dokončen', 'warning');
+            return;
+        }
         document.getElementById('review-modal').classList.add('hidden');
+        document.getElementById('review-modal').classList.remove('modal-required');
     }
 
     async saveWeeklyReview() {
         const saveBtn = document.getElementById('save-review');
         this.setButtonLoading(saveBtn, true);
 
-        const today = new Date();
-        const lastWeekStart = this.getWeekStart(today);
-        lastWeekStart.setDate(lastWeekStart.getDate() - 7);
+        // Use stored review week or calculate last week as fallback
+        let weekStart;
+        if (this.currentReviewWeek) {
+            weekStart = new Date(this.currentReviewWeek);
+        } else {
+            const today = new Date();
+            weekStart = this.getWeekStart(today);
+            weekStart.setDate(weekStart.getDate() - 7);
+        }
 
         const data = {
-            week_start: this.formatDate(lastWeekStart),
+            week_start: this.formatDate(weekStart),
             reflections: {
                 what_worked: document.getElementById('what-worked').value,
                 what_to_improve: document.getElementById('what-to-improve').value,
@@ -1199,6 +1291,11 @@ class PomodoroCalendar {
             const result = await response.json();
 
             if (result.success) {
+                // Remove required flag before closing
+                const modal = document.getElementById('review-modal');
+                modal.classList.remove('modal-required');
+                this.currentReviewWeek = null;
+
                 this.closeReviewModal();
                 this.showToast('Weekly Review úspěšně uložen', 'success');
             } else {
